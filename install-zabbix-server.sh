@@ -160,6 +160,17 @@ check_zabbix_installed() {
 }
 
 uninstall_zabbix() {
+  # Antes de desinstalar
+  echo -e "\n${RED}════════════════════════════════════════════════════════${NC}"
+  read -p "⚠️  ${RED}ADVERTENCIA${NC}: Se va a DESINSTALAR TODO ZABBIX. Esta acción NO se puede deshacer. Presione 's' para CONTINUAR o 'c' para CANCELAR: " confirm
+  echo -e "${RED}════════════════════════════════════════════════════════${NC}\n"
+
+  [[ "$confirm" == [cC] ]] && echo -e "${GREEN}✅ Cancelado por el usuario.${NC}" && exit 0
+  [[ "$confirm" != [sS] ]] && echo -e "${RED}❌ Opción inválida. Cancelando.${NC}" && exit 1
+
+  # Si llegamos aquí, continuar con la desinstalación
+  echo -e "${YELLOW}🚀 Iniciando desinstalación...${NC}"
+
   log_step "Desinstalando Zabbix completamente..."
 
   # Detener servicios
