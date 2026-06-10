@@ -1,4 +1,4 @@
-# 🚀 OrangeBox Zabbix Toolkit
+#  OrangeBox Zabbix Toolkit
 
 Colección de scripts para la instalación, configuración y automatización de Zabbix en entornos Linux empresariales.
 
