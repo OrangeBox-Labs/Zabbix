@@ -7,6 +7,7 @@
 # Email: froman@orangebox.cl
 # Descripcion: Instalacion de Zabbix Agent 7.4 en host remoto
 #              con registro automatico via API y TLS/PSK
+#              Soporta: CentOS 7 (binario), AlmaLinux/RHEL 8/9/10 (repo)
 #              Prioridad: Agent2 > Agent clasico > Binario estatico
 # ==============================================
 
@@ -55,11 +56,11 @@ show_help() {
   echo -e "${GREEN}============================================${NC}"
   echo -e "${GREEN}  Script: install-zabbix-agent.sh${NC}"
   echo -e "${GREEN}  Instalador de Agente Zabbix 7.4${NC}"
-  echo -e "${GREEN}  Prioridad: Agent2 > Agent > Binario${NC}"
+  echo -e "${GREEN}  Soporta: CentOS 7, AlmaLinux/RHEL 8/9/10${NC}"
   echo -e "${GREEN}============================================${NC}\n"
 
   echo -e "${YELLOW}DESCRIPCIÓN:${NC}"
-  echo -e "  Instala Zabbix Agent 7.4 (prioriza Agent2), configura TLS/PSK y registra via API\n"
+  echo -e "  Instala Zabbix Agent 7.4, configura TLS/PSK y registra via API\n"
 
   echo -e "${YELLOW}MODOS DE EJECUCIÓN:${NC}"
   echo -e "  ${GREEN}--lan${NC}      - Modo Red Local (HTTP + /zabbix)"
@@ -135,8 +136,12 @@ detect_os() {
   VER=$VERSION_ID
   log_info "Sistema: $NAME $VERSION_ID"
 
-  # Detectar versión de AlmaLinux específicamente
-  if [ -f /etc/almalinux-release ]; then
+  # Detectar CentOS 7 específicamente
+  if [ "$OS" = "centos" ] && [[ "$VER" =~ ^7 ]]; then
+    OS_FAMILY="centos7"
+    CENTOS7_VERSION="7"
+    log_info "CentOS 7 detectado - usando binario estático Zabbix 7.4"
+  elif [ -f /etc/almalinux-release ]; then
     OS_FAMILY="almalinux"
     ALMA_VERSION=$(grep -oE '[0-9]+' /etc/almalinux-release | head -1)
   elif [ -f /etc/redhat-release ]; then
@@ -152,12 +157,15 @@ detect_os() {
     ALMA_VERSION=$(echo $VER | cut -d. -f1)
   fi
 
-  log_debug "OS Family: $OS_FAMILY, Version: $ALMA_VERSION"
+  log_debug "OS Family: $OS_FAMILY, Version: ${ALMA_VERSION:-$CENTOS7_VERSION}"
 }
 
 install_dependencies() {
   log_step "Instalando dependencias..."
   case $OS_FAMILY in
+  centos7)
+    yum install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
+    ;;
   rhel | almalinux)
     dnf install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
     ;;
@@ -174,6 +182,12 @@ install_dependencies() {
 disable_epel_conflict() {
   log_step "Deshabilitando conflicto con EPEL..."
 
+  # CentOS 7 no tiene EPEL configurado por defecto
+  if [ "$OS_FAMILY" = "centos7" ]; then
+    log_debug "CentOS 7 - omitiendo configuracion EPEL"
+    return 0
+  fi
+
   if [ -f /etc/yum.repos.d/epel.repo ]; then
     if ! grep -q "excludepkgs=zabbix" /etc/yum.repos.d/epel.repo; then
       sed -i '/^\[epel\]/a excludepkgs=zabbix*' /etc/yum.repos.d/epel.repo
@@ -185,11 +199,16 @@ disable_epel_conflict() {
 }
 
 install_zabbix_repo() {
-  log_step "Configurando repositorio Zabbix 7.4..."
+  log_step "Configurando repositorio Zabbix..."
 
   # Limpiar repositorios viejos
   rm -f /etc/yum.repos.d/zabbix.repo
-  dnf remove -y zabbix-release >>/tmp/zabbix_agent_install.log 2>&1
+
+  # CentOS 7 no usa repositorio, usa binario directamente
+  if [ "$OS_FAMILY" = "centos7" ]; then
+    log_info "CentOS 7: no se necesita repositorio (usando binario estático)"
+    return 0
+  fi
 
   case $OS_FAMILY in
   rhel | almalinux)
@@ -240,7 +259,7 @@ install_zabbix_repo() {
     ;;
   esac
 
-  log_info "Repositorio Zabbix 7.4 configurado correctamente"
+  log_info "Repositorio Zabbix configurado correctamente"
   return 0
 }
 
@@ -248,8 +267,52 @@ install_zabbix_repo() {
 # FUNCIONES DE INSTALACIÓN DE AGENTE (Prioridad: Agent2 > Agent > Binario)
 # -----------------------------------------------------------------------------
 
+install_zabbix_agent_centos7_binary() {
+  log_step "Instalando Zabbix Agent 7.4 en CentOS 7 desde binario estático..."
+
+  local BINARY_URL="https://cdn.zabbix.com/zabbix/binaries/stable/7.4/7.4.11/zabbix_agent-7.4.11-linux-3.0-amd64-static.tar.gz"
+  local TMP_DIR="/tmp/zabbix_agent_binary_$$"
+
+  mkdir -p "$TMP_DIR"
+  cd "$TMP_DIR"
+
+  log_info "Descargando binario desde: $BINARY_URL"
+  curl -L -o zabbix_agent.tar.gz "$BINARY_URL" >>/tmp/zabbix_agent_install.log 2>&1
+
+  if [ $? -ne 0 ] || [ ! -f zabbix_agent.tar.gz ]; then
+    log_error "No se pudo descargar el binario"
+    return 1
+  fi
+
+  tar -xzf zabbix_agent.tar.gz >>/tmp/zabbix_agent_install.log 2>&1
+
+  # Copiar binarios
+  cp zabbix_agent/sbin/zabbix_agentd /usr/sbin/
+  cp zabbix_agent/bin/zabbix_get /usr/bin/
+  cp zabbix_agent/bin/zabbix_sender /usr/bin/
+
+  # Crear usuario si no existe
+  id -u zabbix &>/dev/null || useradd -r -s /sbin/nologin zabbix
+
+  # Configurar variables
+  AGENT_TYPE="zabbix_agentd"
+  AGENT_SERVICE="zabbix-agent"
+  AGENT_BINARY="zabbix_agentd"
+  CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
+
+  log_info "Zabbix Agent 7.4.11 instalado desde binario estático en CentOS 7"
+  return 0
+}
+
 install_zabbix_agent2() {
   log_info "Intentando instalar Zabbix Agent 2 desde el repositorio..."
+
+  # CentOS 7 no tiene Agent2
+  if [ "$OS_FAMILY" = "centos7" ]; then
+    log_debug "CentOS 7 no soporta Zabbix Agent 2"
+    return 1
+  fi
+
   case $OS_FAMILY in
   rhel | almalinux)
     if dnf install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
@@ -272,15 +335,26 @@ install_zabbix_agent2() {
     fi
     ;;
   esac
-  log_warn "Zabbix Agent 2 no está disponible en el repositorio"
+  log_warn "Zabbix Agent 2 no está disponible"
   return 1
 }
 
 install_zabbix_agent_legacy() {
   log_info "Intentando instalar Zabbix Agent clásico desde el repositorio..."
+
   case $OS_FAMILY in
   rhel | almalinux)
     if dnf install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
+      AGENT_TYPE="zabbix_agentd"
+      AGENT_SERVICE="zabbix-agent"
+      AGENT_BINARY="zabbix_agentd"
+      CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
+      log_info "Zabbix Agent clásico instalado exitosamente"
+      return 0
+    fi
+    ;;
+  centos7)
+    if yum install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
       AGENT_TYPE="zabbix_agentd"
       AGENT_SERVICE="zabbix-agent"
       AGENT_BINARY="zabbix_agentd"
@@ -300,7 +374,7 @@ install_zabbix_agent_legacy() {
     fi
     ;;
   esac
-  log_warn "Zabbix Agent clásico no está disponible en el repositorio"
+  log_warn "Zabbix Agent clásico no está disponible"
   return 1
 }
 
@@ -324,9 +398,9 @@ install_agent_from_binary() {
   tar -xzf zabbix_agent.tar.gz >>/tmp/zabbix_agent_install.log 2>&1
 
   # Copiar binarios
-  cp zabbix_agent/sbin/zabbix_agentd /usr/sbin/ 2>/dev/null
-  cp zabbix_agent/bin/zabbix_get /usr/bin/ 2>/dev/null
-  cp zabbix_agent/bin/zabbix_sender /usr/bin/ 2>/dev/null
+  cp zabbix_agent/sbin/zabbix_agentd /usr/sbin/
+  cp zabbix_agent/bin/zabbix_get /usr/bin/
+  cp zabbix_agent/bin/zabbix_sender /usr/bin/
 
   # Crear usuario si no existe
   id -u zabbix &>/dev/null || useradd -r -s /sbin/nologin zabbix
@@ -358,7 +432,19 @@ install_agent() {
     AGENT_BINARY="zabbix_agentd"
     CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
     log_info "Zabbix Agent clásico ya está instalado"
+    # Verificar versión
+    local VERSION=$(zabbix_agentd --version | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
+    if [[ "$VERSION" != 7.4* ]]; then
+      log_warn "Versión actual: $VERSION. Se recomienda actualizar a 7.4"
+    fi
     return 0
+  fi
+
+  # Caso especial: CentOS 7 usa binario directamente (más confiable)
+  if [ "$OS_FAMILY" = "centos7" ]; then
+    if install_zabbix_agent_centos7_binary; then
+      return 0
+    fi
   fi
 
   # Intentar instalar Agent 2 primero
@@ -371,7 +457,7 @@ install_agent() {
     return 0
   fi
 
-  # Si ambos fallan, usar binario estático
+  # Si ambos fallan, usar binario estático (último recurso)
   log_warn "No se pudo instalar desde repositorios, usando binario estático..."
   if install_agent_from_binary; then
     return 0
@@ -443,6 +529,9 @@ configure_agent() {
     log_error "CONFIG_FILE no está definido"
     exit 1
   fi
+
+  # Crear directorio de configuración si no existe
+  mkdir -p $(dirname "$CONFIG_FILE")
 
   # Crear configuración limpia (compatible con Agent2 y Agent clásico)
   cat >"$CONFIG_FILE" <<EOF
@@ -561,7 +650,7 @@ start_agent() {
   # Corregir archivo PID antes de iniciar
   fix_pid_file
 
-  # Si es instalación desde binario, crear servicio systemd
+  # Si es instalación desde binario o CentOS 7, crear servicio systemd
   if [ ! -f /usr/lib/systemd/system/${AGENT_SERVICE}.service ] && [ ! -f /etc/systemd/system/${AGENT_SERVICE}.service ]; then
     log_warn "Servicio systemd no encontrado, creando..."
     cat >/etc/systemd/system/${AGENT_SERVICE}.service <<EOF
@@ -714,6 +803,7 @@ done
 clear
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Instalador de Agente Zabbix 7.4${NC}"
+echo -e "${GREEN}  Soporta: CentOS 7, AlmaLinux/RHEL 8/9/10${NC}"
 echo -e "${GREEN}  Prioridad: Agent2 > Agent > Binario${NC}"
 echo -e "${GREEN}  con TLS/PSK y registro automático${NC}"
 echo -e "${GREEN}============================================${NC}\n"
