@@ -49,8 +49,7 @@ El script soporta dos modos de ejecución:
 | ZABBIX_SERVER | Servidor Zabbix (FQDN o IP) | monitoreo.orangebox.cl |
 | ZABBIX_SERVER_PORT | Puerto del servidor Zabbix | 10051 |
 | ZABBIX_API_URL | URL de la API de Zabbix | https://monitoreo.orangebox.cl/api_jsonrpc.php |
-| ZABBIX_ADMIN_USER | Usuario administrador de Zabbix | Admin |
-| ZABBIX_ADMIN_PASS | Password del usuario administrador | (se solicita si está vacía) |
+| API_TOKEN  | token que debes generar en la web de tu Zabbix |
 
 ## Comportamiento
 
@@ -58,7 +57,38 @@ Si una variable está predefinida en el script, se usa automáticamente. Si est�
 
 La URL de la API se genera automáticamente a partir de ZABBIX_SERVER si no se define manualmente.
 
-## Requisitos
+
+## Requisito Previo: Crear API Token en Zabbix
+
+Antes de ejecutar el script, debes crear un API Token en la interfaz web de Zabbix.
+
+### Pasos para crear el API Token:
+
+1. Inicia sesión en Zabbix como usuario **Admin**
+2. Haz clic en tu avatar (esquina superior derecha)
+3. Selecciona **User settings** → **API tokens**
+4. Haz clic en **Create API token**
+5. Asigna un nombre (ej: `agent_installer`)
+6. Haz clic en **Add**
+7. **COPIA EL TOKEN** (se muestra solo una vez)
+
+### Configurar el script:
+
+Edita el script y modifica las siguientes variables:
+
+```
+ZABBIX_SERVER="monitoreo.orangebox.cl"
+API_TOKEN="aea418dfd357074b808e151b5d23a47d14f8290642f0984101a75e3654355408"
+TEMPLATE_ID="10343"  # Linux by Zabbix agent active
+GROUP_ID="2"         # Linux servers
+```
+
+
+# Obtener template ID para "Linux by Zabbix agent active"
+mysql -uzabbix -p zabbix -e "SELECT hostid, host FROM hosts WHERE host='Linux by Zabbix agent active' AND status=3;"
+
+# Obtener group ID para "Linux servers"
+mysql -uzabbix -p zabbix -e "SELECT groupid, name FROM groups WHERE name='Linux servers';"
 
 | Requisito | Detalle |
 |-----------|---------|
