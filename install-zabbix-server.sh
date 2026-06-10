@@ -152,33 +152,27 @@ init_log() {
 kill_zabbix_processes() {
   log_step "Forzando terminación de procesos Zabbix..."
 
-  # Detener servicios
+  # Detener servicios (forma limpia)
   systemctl stop zabbix-server zabbix-agent 2>/dev/null
   systemctl disable zabbix-server zabbix-agent 2>/dev/null
 
-  # Lista de procesos a matar
-  local processes=("zabbix_server" "zabbix_agentd" "zabbix_proxy" "zabbix_java" "zabbix")
+  # Esperar a que terminen graceful
+  sleep 2
 
-  for proc in "${processes[@]}"; do
-    if pgrep -f "$proc" >/dev/null; then
-      log_info "Matando procesos: $proc"
-      pkill -9 "$proc" 2>/dev/null
-    fi
-  done
+  # Matar SOLO los binarios específicos por ruta absoluta
+  # Esto NO afecta scripts de bash
+  pkill -9 -f "^/usr/sbin/zabbix_server" 2>/dev/null
+  pkill -9 -f "^/usr/sbin/zabbix_agentd" 2>/dev/null
+  pkill -9 -f "^/usr/bin/zabbix" 2>/dev/null
 
-  # Matar cualquier proceso zabbix restante
-  pgrep -f "zabbix" | xargs kill -9 2>/dev/null
-
-  # Usar killall como respaldo
+  # Método alternativo con killall (solo binarios)
   killall -9 zabbix_server 2>/dev/null
   killall -9 zabbix_agentd 2>/dev/null
-  killall -9 zabbix 2>/dev/null
 
-  # Verificar
-  sleep 2
-  if pgrep -f "zabbix" >/dev/null; then
-    log_warn "Algunos procesos aún persisten:"
-    pgrep -f "zabbix" | xargs ps -fp
+  # Verificar con pgrep específico de binarios (no -f)
+  sleep 1
+  if pgrep "zabbix_server\|zabbix_agentd" >/dev/null 2>&1; then
+    log_warn "Algunos procesos aún persisten"
   else
     log_info "Todos los procesos Zabbix han sido eliminados"
   fi
