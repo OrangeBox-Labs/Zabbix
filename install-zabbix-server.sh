@@ -50,6 +50,7 @@ show_usage() {
   echo "  $0 --agent                            - Instalar solo Zabbix Agent"
   echo "  $0 --uninstall                        - Desinstalar Zabbix completamente"
   echo "  $0 --reinstall                        - Reinstalar desde cero (desinstala y vuelve a instalar)"
+  echo "  $0 --kill-zabbix                      - Matar todos los procesos Zabbix"
   echo "  $0 --no-tune                          - No aplicar tuning a MySQL"
   echo "  $0 --help                             - Mostrar esta ayuda"
   echo ""
@@ -148,6 +149,125 @@ init_log() {
   log_info "Log de instalacion: $LOG_FILE"
 }
 
+kill_zabbix_processes() {
+  log_step "Forzando terminación de procesos Zabbix..."
+
+  # Detener servicios
+  systemctl stop zabbix-server zabbix-agent 2>/dev/null
+  systemctl disable zabbix-server zabbix-agent 2>/dev/null
+
+  # Lista de procesos a matar
+  local processes=("zabbix_server" "zabbix_agentd" "zabbix_proxy" "zabbix_java" "zabbix")
+
+  for proc in "${processes[@]}"; do
+    if pgrep -f "$proc" >/dev/null; then
+      log_info "Matando procesos: $proc"
+      pkill -9 "$proc" 2>/dev/null
+    fi
+  done
+
+  # Matar cualquier proceso zabbix restante
+  pgrep -f "zabbix" | xargs kill -9 2>/dev/null
+
+  # Usar killall como respaldo
+  killall -9 zabbix_server 2>/dev/null
+  killall -9 zabbix_agentd 2>/dev/null
+  killall -9 zabbix 2>/dev/null
+
+  # Verificar
+  sleep 2
+  if pgrep -f "zabbix" >/dev/null; then
+    log_warn "Algunos procesos aún persisten:"
+    pgrep -f "zabbix" | xargs ps -fp
+  else
+    log_info "Todos los procesos Zabbix han sido eliminados"
+  fi
+}
+
+uninstall_zabbix() {
+  log_step "PREPARANDO DESINSTALACIÓN DE ZABBIX"
+
+  # Mensaje de advertencia y confirmación
+  echo -e "\n${RED}══════════════════════════════════════════════════════════════════════${NC}"
+  echo -e "${RED}⚠️  ADVERTENCIA: Se va a DESINSTALAR TODO ZABBIX${NC}"
+  echo -e "${RED}══════════════════════════════════════════════════════════════════════${NC}"
+  echo -e "${YELLOW}Esto incluye:${NC}"
+  echo -e "  • Servicios de Zabbix Server y Agent"
+  echo -e "  • Archivos de configuración (/etc/zabbix)"
+  echo -e "  • Archivos de datos (/var/lib/zabbix)"
+  echo -e "  • Logs (/var/log/zabbix)"
+  echo -e "  • Base de datos 'zabbix' (opcional)"
+  echo -e "  • Usuario 'zabbix' en MySQL"
+  echo -e ""
+  echo -e "${RED}⚠️  Esta acción es IRREVERSIBLE y NO se puede deshacer${NC}"
+  echo -e ""
+  read -p "Presione 's' para CONTINUAR o 'c' para CANCELAR: " confirm
+  echo -e "${RED}══════════════════════════════════════════════════════════════════════${NC}\n"
+
+  # Validar respuesta
+  if [[ "$confirm" == [cC] ]]; then
+    echo -e "${GREEN}✅ Operación cancelada por el usuario.${NC}"
+    return 1
+  fi
+
+  if [[ "$confirm" != [sS] ]]; then
+    echo -e "${RED}❌ Opción inválida. Cancelando operación.${NC}"
+    return 1
+  fi
+
+  log_info "Iniciando desinstalación forzada de Zabbix..."
+
+  # 1. FORZAR DETENCIÓN DE SERVICIOS (con kill si es necesario)
+  log_step "Deteniendo servicios de Zabbix..."
+  kill_zabbix_processes
+
+  # 2. Eliminar paquetes
+  log_step "Eliminando paquetes de Zabbix..."
+  dnf remove -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent 2>/dev/null
+
+  # 3. Eliminar archivos de configuración y datos
+  log_step "Eliminando archivos y directorios..."
+  rm -rf /etc/zabbix
+  rm -rf /usr/share/zabbix
+  rm -rf /var/lib/zabbix
+  rm -rf /var/log/zabbix
+  rm -rf /etc/httpd/conf.d/zabbix.conf
+  rm -f /etc/zabbix_server.conf
+  rm -f /etc/zabbix_agentd.conf
+  rm -f /etc/zabbix/zabbix_server.conf
+  rm -f /etc/zabbix/zabbix_agentd.conf
+
+  # 4. Preguntar por base de datos
+  if command -v mysql &>/dev/null; then
+    echo -e "\n${YELLOW}¿Desea eliminar también la base de datos 'zabbix'? (s/N): ${NC}"
+    read -r confirm_db
+    if [[ "$confirm_db" =~ ^[Ss]$ ]]; then
+      log_step "Eliminando base de datos..."
+      if [ -f /root/.my.cnf ]; then
+        mysql --defaults-file=/root/.my.cnf -e "DROP DATABASE IF EXISTS zabbix;" 2>/dev/null
+        mysql --defaults-file=/root/.my.cnf -e "DROP USER IF EXISTS 'zabbix'@'localhost';" 2>/dev/null
+        mysql --defaults-file=/root/.my.cnf -e "DROP USER IF EXISTS 'zabbix'@'127.0.0.1';" 2>/dev/null
+        mysql --defaults-file=/root/.my.cnf -e "FLUSH PRIVILEGES;" 2>/dev/null
+        log_info "Base de datos y usuario eliminados"
+      else
+        log_warn "No se pudo conectar a MySQL. Base de datos NO eliminada."
+      fi
+    else
+      log_info "Manteniendo base de datos zabbix"
+    fi
+  fi
+
+  # 5. Eliminar archivos de tuning
+  rm -f /etc/my.cnf.d/zabbix-tuning.cnf
+
+  # 6. Limpiar caché de paquetes
+  dnf clean all 2>/dev/null
+
+  log_info "Zabbix desinstalado completamente"
+  echo -e "${GREEN}✅ Desinstalación completada${NC}"
+  return 0
+}
+
 check_zabbix_installed() {
   if command -v zabbix_server &>/dev/null || [ -f /etc/zabbix/zabbix_server.conf ]; then
     ZABBIX_ALREADY_INSTALLED=true
@@ -157,50 +277,6 @@ check_zabbix_installed() {
     ZABBIX_ALREADY_INSTALLED=false
     return 1
   fi
-}
-
-uninstall_zabbix() {
-  # Antes de desinstalar
-  echo -e "\n${RED}════════════════════════════════════════════════════════${NC}"
-  read -p "⚠️  ${RED}ADVERTENCIA${NC}: Se va a DESINSTALAR TODO ZABBIX. Esta acción NO se puede deshacer. Presione 's' para CONTINUAR o 'c' para CANCELAR: " confirm
-  echo -e "${RED}════════════════════════════════════════════════════════${NC}\n"
-
-  [[ "$confirm" == [cC] ]] && echo -e "${GREEN}✅ Cancelado por el usuario.${NC}" && exit 0
-  [[ "$confirm" != [sS] ]] && echo -e "${RED}❌ Opción inválida. Cancelando.${NC}" && exit 1
-
-  # Si llegamos aquí, continuar con la desinstalación
-  echo -e "${YELLOW}🚀 Iniciando desinstalación...${NC}"
-
-  log_step "Desinstalando Zabbix completamente..."
-
-  # Detener servicios
-  systemctl stop zabbix-server zabbix-agent httpd php-fpm 2>/dev/null
-  systemctl disable zabbix-server zabbix-agent httpd php-fpm 2>/dev/null
-
-  # Eliminar paquetes
-  dnf remove -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent 2>/dev/null
-
-  # Eliminar archivos de configuracion
-  rm -rf /etc/zabbix
-  rm -rf /usr/share/zabbix
-  rm -rf /var/lib/zabbix
-  rm -rf /var/log/zabbix
-
-  # Eliminar base de datos (preguntar)
-  if mysql --defaults-file=/root/.my.cnf -e "SELECT 1" &>/dev/null; then
-    echo -e "${YELLOW}¿Desea eliminar la base de datos zabbix? (s/N): ${NC}"
-    read -r confirm
-    if [[ "$confirm" =~ ^[Ss]$ ]]; then
-      mysql --defaults-file=/root/.my.cnf -e "DROP DATABASE IF EXISTS zabbix;"
-      mysql --defaults-file=/root/.my.cnf -e "DROP USER IF EXISTS 'zabbix'@'localhost'; DROP USER IF EXISTS 'zabbix'@'127.0.0.1';"
-      log_info "Base de datos y usuario eliminados"
-    fi
-  fi
-
-  # Eliminar archivos de tuning
-  rm -f /etc/my.cnf.d/zabbix-tuning.cnf
-
-  log_info "Zabbix desinstalado correctamente"
 }
 
 check_mysql_installed() {
@@ -314,8 +390,6 @@ configure_mysql_tuning() {
   log_step "Aplicando tuning de MySQL para ~${EXPECTED_HOSTS} servidores..."
 
   local MYSQL_TUNING_FILE="/etc/my.cnf.d/zabbix-tuning.cnf"
-  local MYSQL_VERSION=$(mysql --version | grep -oP 'Ver \K[0-9.]+' | cut -d. -f1)
-
   local TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
   local INNODB_BUFFER_POOL_SIZE="2G"
   local INNODB_LOG_FILE_SIZE="512M"
@@ -760,6 +834,45 @@ show_completion() {
 }
 
 # ==============================================
+# FUNCION PRINCIPAL DE INSTALACION
+# ==============================================
+
+main_installation() {
+  install_mariadb
+  setup_mysql_root_password
+  secure_mariadb
+  configure_mysql_tuning
+  configure_repository
+  install_server
+  create_database
+  configure_server
+  configure_web
+  configure_agent
+  configure_locales
+  start_services
+  configure_firewall
+  verify_mysql_tuning
+  verify_locales
+  create_credentials_file
+  show_completion
+}
+
+reinstall_zabbix() {
+  log_step "INICIANDO REINSTALACIÓN COMPLETA DE ZABBIX"
+
+  # Llamar a la función de desinstalación con confirmación
+  if uninstall_zabbix; then
+    log_info "Desinstalación completada. Comenzando instalación fresca..."
+    sleep 3
+    # Continuar con la instalación normal
+    main_installation
+  else
+    log_error "Reinstalación cancelada o falló la desinstalación"
+    exit 1
+  fi
+}
+
+# ==============================================
 # OPCIONES DE LINEA DE COMANDOS
 # ==============================================
 
@@ -767,6 +880,7 @@ AUTO_MODE=false
 AGENT_ONLY=false
 UNINSTALL=false
 REINSTALL=false
+KILL_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -785,6 +899,10 @@ while [[ $# -gt 0 ]]; do
     ;;
   --reinstall)
     REINSTALL=true
+    shift
+    ;;
+  --kill-zabbix)
+    KILL_ONLY=true
     shift
     ;;
   --no-tune)
@@ -819,27 +937,31 @@ check_root
 detect_os
 init_log
 
+# Manejar kill de procesos (opcion independiente)
+if [ "$KILL_ONLY" = true ]; then
+  kill_zabbix_processes
+  exit 0
+fi
+
+# Manejar reinstalacion
+if [ "$REINSTALL" = true ]; then
+  reinstall_zabbix
+  exit 0
+fi
+
 # Manejar desinstalacion
 if [ "$UNINSTALL" = true ]; then
   uninstall_zabbix
   exit 0
 fi
 
-# Manejar reinstalacion
-if [ "$REINSTALL" = true ]; then
-  check_zabbix_installed
-  if [ "$ZABBIX_ALREADY_INSTALLED" = true ]; then
-    uninstall_zabbix
-  fi
-  # Continuar con instalacion limpia
-fi
-
+# Instalacion normal
 if [ "$AGENT_ONLY" = false ]; then
   check_mysql_installed
   setup_passwords
 fi
 
-if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ] && [ "$REINSTALL" = false ]; then
+if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ]; then
   echo -e "${YELLOW}Este script instalara Zabbix Server 7.4 con:${NC}"
   echo -e "  • MariaDB con hardening y tuning (buffer_pool: 2-4GB, max_connections: 500)"
   echo -e "  • Apache Web Server"
@@ -866,21 +988,5 @@ if [ "$AGENT_ONLY" = true ]; then
   echo -e "Configuracion en: /etc/zabbix/zabbix_agentd.conf"
   echo -e "Log de instalacion: $LOG_FILE"
 else
-  install_mariadb
-  setup_mysql_root_password
-  secure_mariadb
-  configure_mysql_tuning
-  configure_repository
-  install_server
-  create_database
-  configure_server
-  configure_web
-  configure_agent
-  configure_locales
-  start_services
-  configure_firewall
-  verify_mysql_tuning
-  verify_locales
-  create_credentials_file
-  show_completion
+  main_installation
 fi
