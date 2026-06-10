@@ -7,6 +7,7 @@
 # Email: froman@orangebox.cl
 # Descripcion: Instalacion de Zabbix Agent 7.4 en host remoto
 #              con registro automatico via API y TLS/PSK
+#              Repositorio oficial Zabbix + fallback a binario estatico
 # ==============================================
 
 RED='\033[0;31m'
@@ -133,6 +134,14 @@ detect_os() {
   VER=$VERSION_ID
   log_info "Sistema: $NAME $VERSION_ID"
 
+  # Detectar versión de AlmaLinux específicamente
+  if [ -f /etc/almalinux-release ]; then
+    ALMA_VERSION=$(rpm -q --qf "%{VERSION}" almalinux-release | cut -d. -f1)
+    log_debug "AlmaLinux versión: $ALMA_VERSION"
+  else
+    ALMA_VERSION=$VER
+  fi
+
   case $OS in
   centos | rhel | almalinux | rocky | fedora | amzn | ol) OS_FAMILY="rhel" ;;
   debian | ubuntu | raspbian | linuxmint) OS_FAMILY="debian" ;;
@@ -154,7 +163,6 @@ install_dependencies() {
 disable_epel_conflict() {
   log_step "Deshabilitando conflicto con EPEL..."
 
-  # Excluir zabbix de EPEL para que no interfiera
   if [ -f /etc/yum.repos.d/epel.repo ]; then
     if ! grep -q "excludepkgs=zabbix" /etc/yum.repos.d/epel.repo; then
       sed -i '/^\[epel\]/a excludepkgs=zabbix*' /etc/yum.repos.d/epel.repo
@@ -163,40 +171,50 @@ disable_epel_conflict() {
       log_info "EPEL ya excluye zabbix"
     fi
   fi
-
-  # Backup temporal de EPEL durante la instalación
-  if [ -f /etc/yum.repos.d/epel.repo ]; then
-    mv /etc/yum.repos.d/epel.repo /etc/yum.repos.d/epel.repo.bak 2>/dev/null
-    log_debug "EPEL temporalmente deshabilitado"
-  fi
 }
 
-restore_epel() {
-  if [ -f /etc/yum.repos.d/epel.repo.bak ]; then
-    mv /etc/yum.repos.d/epel.repo.bak /etc/yum.repos.d/epel.repo 2>/dev/null
-    log_debug "EPEL restaurado"
+get_alma_version() {
+  if [ -f /etc/almalinux-release ]; then
+    ALMA_VERSION=$(rpm -q --qf "%{VERSION}" almalinux-release | cut -d. -f1)
+  else
+    ALMA_VERSION=$(echo $VER | cut -d. -f1)
   fi
+  echo $ALMA_VERSION
 }
 
 install_zabbix_repo() {
   log_step "Configurando repositorio Zabbix 7.4..."
 
+  # Limpiar repositorios viejos
+  rm -f /etc/yum.repos.d/zabbix.repo
+
   case $OS_FAMILY in
   rhel)
-    case $VER in
-    10*) ZBX_REPO_VERSION="10" ;;
-    9*) ZBX_REPO_VERSION="9" ;;
-    8*) ZBX_REPO_VERSION="8" ;;
-    7*) ZBX_REPO_VERSION="7" ;;
-    *) ZBX_REPO_VERSION="9" ;;
-    esac
+    local ALMA_VER=$(get_alma_version)
+    log_debug "Versión detectada: $ALMA_VER"
 
-    # Limpiar repositorios viejos
-    rm -f /etc/yum.repos.d/zabbix.repo
+    # Verificar que la versión es soportada
+    if [[ ! "$ALMA_VER" =~ ^(8|9|10)$ ]]; then
+      log_error "Versión $ALMA_VER no soportada. Usando fallback a binario."
+      install_agent_from_binary
+      return $?
+    fi
+
+    # URL CORRECTA según documentación oficial de Zabbix
+    local REPO_URL="https://repo.zabbix.com/zabbix/7.4/release/alma/${ALMA_VER}/noarch/zabbix-release-latest-7.4.el${ALMA_VER}.noarch.rpm"
+    log_info "Repositorio: $REPO_URL"
+
+    rpm -Uvh "$REPO_URL" >>/tmp/zabbix_agent_install.log 2>&1
+
+    if [ $? -ne 0 ] || [ ! -f /etc/yum.repos.d/zabbix.repo ]; then
+      log_warn "No se pudo instalar el repositorio desde $REPO_URL"
+      log_info "Intentando método alternativo: binario estático..."
+      install_agent_from_binary
+      return $?
+    fi
+
+    # Limpiar caché
     dnf clean all >>/tmp/zabbix_agent_install.log 2>&1
-
-    # Instalar repo 7.4 (sin fallback a versiones antiguas)
-    rpm -Uvh "https://repo.zabbix.com/zabbix/7.4/rhel/${ZBX_REPO_VERSION}/x86_64/zabbix-release-7.4-1.el${ZBX_REPO_VERSION}.noarch.rpm" >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   debian)
     local DEB_VERSION=""
@@ -217,7 +235,7 @@ install_zabbix_repo() {
       esac
       ;;
     esac
-    wget -q "https://repo.zabbix.com/zabbix/7.4/debian/pool/main/z/zabbix-release/zabbix-release_latest_7.4+${DEB_VERSION}_all.deb" -O /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
+    wget -q "https://repo.zabbix.com/zabbix/7.4/ubuntu/pool/main/z/zabbix-release/zabbix-release_latest_7.4+${DEB_VERSION}_all.deb" -O /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
     dpkg -i /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
     apt-get update -qq >>/tmp/zabbix_agent_install.log 2>&1
     ;;
@@ -226,13 +244,95 @@ install_zabbix_repo() {
   log_info "Repositorio Zabbix 7.4 configurado"
 }
 
+install_agent_from_binary() {
+  log_step "Instalando Zabbix Agent desde binario estático..."
+
+  local BINARY_URL="https://cdn.zabbix.com/zabbix/binaries/stable/7.4/7.4.11/zabbix_agent-7.4.11-linux-3.0-amd64-static.tar.gz"
+  local TMP_DIR="/tmp/zabbix_agent_binary_$$"
+
+  mkdir -p "$TMP_DIR"
+  cd "$TMP_DIR"
+
+  log_info "Descargando binario desde: $BINARY_URL"
+  curl -L -o zabbix_agent.tar.gz "$BINARY_URL" >>/tmp/zabbix_agent_install.log 2>&1
+
+  if [ $? -ne 0 ] || [ ! -f zabbix_agent.tar.gz ]; then
+    log_error "No se pudo descargar el binario"
+    return 1
+  fi
+
+  tar -xzf zabbix_agent.tar.gz >>/tmp/zabbix_agent_install.log 2>&1
+
+  # Copiar binarios
+  cp zabbix_agent/sbin/zabbix_agentd /usr/sbin/ 2>/dev/null
+  cp zabbix_agent/bin/zabbix_get /usr/bin/ 2>/dev/null
+  cp zabbix_agent/bin/zabbix_sender /usr/bin/ 2>/dev/null
+
+  # Crear usuario si no existe
+  id -u zabbix &>/dev/null || useradd -r -s /sbin/nologin zabbix
+
+  # Crear directorios
+  mkdir -p /etc/zabbix
+  mkdir -p /var/log/zabbix
+  chown zabbix:zabbix /var/log/zabbix
+
+  # Crear servicio systemd
+  cat >/etc/systemd/system/zabbix-agent.service <<'EOF'
+[Unit]
+Description=Zabbix Agent
+After=network.target
+
+[Service]
+Type=simple
+User=zabbix
+Group=zabbix
+ExecStart=/usr/sbin/zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+
+  AGENT_TYPE="zabbix_agentd"
+  AGENT_SERVICE="zabbix-agent"
+
+  # Crear archivo de configuración básico
+  cat >/etc/zabbix/zabbix_agentd.conf <<'EOF'
+Server=127.0.0.1
+ServerActive=127.0.0.1
+Hostname=Zabbix server
+ListenPort=10050
+ListenIP=0.0.0.0
+StartAgents=3
+LogFile=/var/log/zabbix/zabbix_agentd.log
+LogFileSize=10
+DebugLevel=3
+Timeout=30
+EOF
+
+  log_info "Zabbix Agent instalado desde binario estático"
+  return 0
+}
+
 install_agent() {
   log_step "Instalando Zabbix Agent 7.4..."
 
+  # Si ya se instaló desde binario, salir
+  if command -v zabbix_agentd &>/dev/null; then
+    AGENT_VERSION=$(zabbix_agentd --version | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
+    log_info "Zabbix Agent ya instalado: $AGENT_VERSION"
+    AGENT_TYPE="zabbix_agentd"
+    AGENT_SERVICE="zabbix-agent"
+    return 0
+  fi
+
   case $OS_FAMILY in
   rhel)
-    # Deshabilitar EPEL temporalmente para forzar instalación desde repo Zabbix
-    dnf --disablerepo=epel install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
+    # Intentar instalar desde repositorio
+    dnf install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   debian)
     apt-get install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
@@ -242,22 +342,20 @@ install_agent() {
     ;;
   esac
 
-  # Verificar versión
-  AGENT_VERSION=$(zabbix_agentd --version | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
-  if [[ "$AGENT_VERSION" == 7.4* ]]; then
+  # Verificar instalación
+  if command -v zabbix_agentd &>/dev/null; then
+    AGENT_VERSION=$(zabbix_agentd --version | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
     log_info "Zabbix Agent $AGENT_VERSION instalado"
+    AGENT_TYPE="zabbix_agentd"
+    AGENT_SERVICE="zabbix-agent"
   else
-    log_error "Se instaló versión $AGENT_VERSION, se esperaba 7.4"
-    log_info "Forzando instalación manual desde RPM..."
-    cd /tmp
-    wget -q "https://repo.zabbix.com/zabbix/7.4/rhel/9/x86_64/zabbix-agent-7.4.11-1.el9.x86_64.rpm"
-    dnf install -y ./zabbix-agent-7.4.11-1.el9.x86_64.rpm >>/tmp/zabbix_agent_install.log 2>&1
-    cd -
+    log_warn "No se pudo instalar desde repositorio, intentando binario estático..."
+    install_agent_from_binary
+    if [ $? -ne 0 ]; then
+      log_error "No se pudo instalar el agente Zabbix"
+      exit 1
+    fi
   fi
-
-  AGENT_TYPE="zabbix_agentd"
-  AGENT_SERVICE="zabbix-agent"
-  log_info "Agente instalado: $AGENT_TYPE"
 }
 
 generate_psk() {
@@ -373,26 +471,23 @@ EOF
 
 start_agent() {
   log_step "Iniciando servicio del agente..."
-  systemctl enable "$AGENT_SERVICE" >>/tmp/zabbix_agent_install.log 2>&1
-  systemctl restart "$AGENT_SERVICE" >>/tmp/zabbix_agent_install.log 2>&1
 
-  if systemctl is-active "$AGENT_SERVICE" &>/dev/null; then
+  # Si es instalación desde binario, usar servicio systemd
+  if [ -f /etc/systemd/system/zabbix-agent.service ]; then
+    systemctl daemon-reload
+    systemctl enable zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
+    systemctl restart zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
+  else
+    systemctl enable "$AGENT_SERVICE" >>/tmp/zabbix_agent_install.log 2>&1
+    systemctl restart "$AGENT_SERVICE" >>/tmp/zabbix_agent_install.log 2>&1
+  fi
+
+  if pgrep -f "zabbix_agentd" >/dev/null; then
     log_info "Agente iniciado correctamente"
   else
     log_error "Error al iniciar agente"
-    systemctl status "$AGENT_SERVICE" --no-pager
     exit 1
   fi
-}
-
-verify_connection() {
-  log_step "Verificando conexión TLS desde el servidor..."
-  echo -n "${PSK_KEY}" >/tmp/psk_test.key
-  log_info "Desde el servidor Zabbix, ejecute:"
-  echo -e "${YELLOW}  zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname \\"
-  echo -e "    --tls-connect psk \\"
-  echo -e "    --tls-psk-identity \"${PSK_IDENTITY}\" \\"
-  echo -e "    --tls-psk-file /tmp/psk_test.key${NC}"
 }
 
 save_credentials() {
@@ -419,6 +514,16 @@ Servidor: ${ZABBIX_SERVER}
 EOF
   chmod 600 "$CRED_FILE"
   log_info "Credenciales guardadas: $CRED_FILE"
+}
+
+verify_connection() {
+  log_step "Verificando conexión TLS desde el servidor..."
+  echo -n "${PSK_KEY}" >/tmp/psk_test.key
+  log_info "Desde el servidor Zabbix, ejecute:"
+  echo -e "${YELLOW}  zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname \\"
+  echo -e "    --tls-connect psk \\"
+  echo -e "    --tls-psk-identity \"${PSK_IDENTITY}\" \\"
+  echo -e "    --tls-psk-file /tmp/psk_test.key${NC}"
 }
 
 show_completion() {
@@ -536,7 +641,6 @@ install_dependencies
 disable_epel_conflict
 install_zabbix_repo
 install_agent
-restore_epel
 generate_psk
 configure_agent
 configure_firewall
