@@ -65,10 +65,6 @@ show_help() {
   echo -e "  # Modo automático con credenciales"
   echo -e "  ${GREEN}./install-zabbix-geoip.sh --auto 123456 abc123def456${NC}\n"
 
-  echo -e "${YELLOW}LOGS:${NC}"
-  echo -e "  • Instalación: ${GREEN}${LOG_FILE}${NC}"
-  echo -e "  • Actualización GeoIP: ${GREEN}/var/log/geoip-update.log${NC}\n"
-
   echo -e "${GREEN}============================================${NC}"
   echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}"
   echo -e "${GREEN}============================================${NC}"
@@ -142,10 +138,46 @@ get_maxmind_credentials() {
 install_dependencies() {
   log_step "Instalando dependencias..."
 
+  # Habilitar EPEL
   dnf install -y epel-release >>"$LOG_FILE" 2>&1
+
+  # Instalar paquetes
   dnf install -y geoipupdate crontabs wget curl >>"$LOG_FILE" 2>&1
 
-  log_info "Dependencias instaladas"
+  # Verificar si geoipupdate se instaló correctamente
+  if ! command -v geoipupdate &>/dev/null; then
+    log_warn "geoipupdate no encontrado en repositorios, intentando instalación manual..."
+
+    # Intentar instalar desde GitHub
+    cd /tmp
+    wget -q https://github.com/maxmind/geoipupdate/releases/download/v6.0.0/geoipupdate_6.0.0_linux_amd64.rpm
+    if [ -f geoipupdate_6.0.0_linux_amd64.rpm ]; then
+      dnf install -y ./geoipupdate_6.0.0_linux_amd64.rpm >>"$LOG_FILE" 2>&1
+      rm -f geoipupdate_6.0.0_linux_amd64.rpm
+    else
+      # Probar con versión más reciente
+      LATEST_VERSION=$(curl -s https://api.github.com/repos/maxmind/geoipupdate/releases/latest | grep tag_name | cut -d '"' -f 4 | sed 's/v//')
+      if [ -n "$LATEST_VERSION" ]; then
+        wget -q "https://github.com/maxmind/geoipupdate/releases/download/v${LATEST_VERSION}/geoipupdate_${LATEST_VERSION}_linux_amd64.rpm"
+        dnf install -y "./geoipupdate_${LATEST_VERSION}_linux_amd64.rpm" >>"$LOG_FILE" 2>&1
+        rm -f "geoipupdate_${LATEST_VERSION}_linux_amd64.rpm"
+      fi
+    fi
+    cd - >>"$LOG_FILE" 2>&1
+  fi
+
+  # Verificación final
+  if command -v geoipupdate &>/dev/null; then
+    log_info "geoipupdate instalado correctamente"
+    geoipupdate -V 2>&1 | head -1 >>"$LOG_FILE"
+  else
+    log_error "No se pudo instalar geoipupdate"
+    echo -e "${YELLOW}Por favor, instálelo manualmente con:${NC}"
+    echo -e "  dnf install -y geoipupdate"
+    echo -e "${YELLOW}O descargue desde:${NC}"
+    echo -e "  https://github.com/maxmind/geoipupdate/releases"
+    exit 1
+  fi
 }
 
 configure_geoip() {
@@ -172,11 +204,22 @@ EOF
 download_initial_geoip() {
   log_step "Descargando base de datos GeoIP inicial..."
 
+  # Ejecutar geoipupdate
   if command -v geoipupdate &>/dev/null; then
-    geoipupdate >>"$LOG_FILE" 2>&1
-    log_info "Base de datos GeoIP descargada"
+    geoipupdate -v >>"$LOG_FILE" 2>&1
+
+    # Verificar que se descargó el archivo
+    if [ -f "$GEOIP_DIR/GeoLite2-City.mmdb" ]; then
+      log_info "Base de datos GeoIP descargada correctamente"
+      ls -la "$GEOIP_DIR/GeoLite2-City.mmdb" >>"$LOG_FILE"
+    else
+      log_error "No se pudo descargar la base de datos GeoIP"
+      log_error "Verifique sus credenciales en /etc/GeoIP.conf"
+      log_info "Puede probar manualmente: geoipupdate -v"
+      exit 1
+    fi
   else
-    log_error "geoipupdate no encontrado"
+    log_error "geoipupdate no está disponible"
     exit 1
   fi
 }
@@ -184,18 +227,24 @@ download_initial_geoip() {
 setup_geoip_files() {
   log_step "Configurando archivos GeoIP para Zabbix..."
 
-  # Crear enlace simbólico o copiar archivo
+  # Copiar archivo al directorio de Zabbix
   if [ -f "$GEOIP_DIR/GeoLite2-City.mmdb" ]; then
-    cp "$GEOIP_DIR/GeoLite2-City.mmdb" "$ZABBIX_GEOIP_DIR/" 2>/dev/null ||
-      ln -sf "$GEOIP_DIR/GeoLite2-City.mmdb" "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" 2>/dev/null
+    cp "$GEOIP_DIR/GeoLite2-City.mmdb" "$ZABBIX_GEOIP_DIR/" 2>/dev/null
 
+    # Si falla la copia, intentar enlace simbólico
+    if [ ! -f "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" ]; then
+      ln -sf "$GEOIP_DIR/GeoLite2-City.mmdb" "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" 2>/dev/null
+    fi
+
+    # Configurar permisos
     chown -R zabbix:zabbix "$ZABBIX_GEOIP_DIR" 2>/dev/null
     chmod 755 "$ZABBIX_GEOIP_DIR"
     chmod 644 "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" 2>/dev/null
 
     log_info "Archivo GeoIP configurado en $ZABBIX_GEOIP_DIR"
   else
-    log_warn "Archivo GeoLite2-City.mmdb no encontrado"
+    log_error "Archivo GeoLite2-City.mmdb no encontrado"
+    exit 1
   fi
 }
 
@@ -217,9 +266,13 @@ echo "$(date): Iniciando actualización GeoIP..." >> $LOG_FILE
 
 if [ $? -eq 0 ]; then
     # Copiar al directorio de Zabbix
-    cp "$GEOIP_DIR/GeoLite2-City.mmdb" "$ZABBIX_GEOIP_DIR/" 2>/dev/null
-    chown zabbix:zabbix "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" 2>/dev/null
-    echo "$(date): Actualización GeoIP completada exitosamente" >> $LOG_FILE
+    if [ -f "$GEOIP_DIR/GeoLite2-City.mmdb" ]; then
+        cp "$GEOIP_DIR/GeoLite2-City.mmdb" "$ZABBIX_GEOIP_DIR/" 2>/dev/null
+        chown zabbix:zabbix "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" 2>/dev/null
+        echo "$(date): Actualización GeoIP completada exitosamente" >> $LOG_FILE
+    else
+        echo "$(date): Archivo GeoIP no encontrado después de actualización" >> $LOG_FILE
+    fi
 else
     echo "$(date): ERROR en actualización GeoIP" >> $LOG_FILE
 fi
@@ -233,7 +286,7 @@ EOF
 setup_cron() {
   log_step "Configurando actualización automática (cron)..."
 
-  # Actualización semanal (domingo a las 2 AM)
+  # Crear script semanal
   cat >/etc/cron.weekly/geoip-update <<EOF
 #!/bin/bash
 /usr/local/bin/update-zabbix-geoip.sh
@@ -255,18 +308,17 @@ configure_zabbix_server() {
 
   # Verificar que Zabbix server existe
   if [ -f /etc/zabbix/zabbix_server.conf ]; then
-    # Agregar o actualizar configuración GeoIP
-    if grep -q "^# GeoIPDatabaseFile" /etc/zabbix/zabbix_server.conf; then
-      sed -i "s|^# GeoIPDatabaseFile=.*|GeoIPDatabaseFile=${ZABBIX_GEOIP_DIR}/GeoLite2-City.mmdb|" /etc/zabbix/zabbix_server.conf
-    elif grep -q "^GeoIPDatabaseFile" /etc/zabbix/zabbix_server.conf; then
-      sed -i "s|^GeoIPDatabaseFile=.*|GeoIPDatabaseFile=${ZABBIX_GEOIP_DIR}/GeoLite2-City.mmdb|" /etc/zabbix/zabbix_server.conf
-    else
-      echo "GeoIPDatabaseFile=${ZABBIX_GEOIP_DIR}/GeoLite2-City.mmdb" >>/etc/zabbix/zabbix_server.conf
-    fi
+    # Eliminar configuraciones existentes
+    sed -i '/^GeoIPDatabaseFile/d' /etc/zabbix/zabbix_server.conf
+
+    # Agregar nueva configuración
+    echo "GeoIPDatabaseFile=${ZABBIX_GEOIP_DIR}/GeoLite2-City.mmdb" >>/etc/zabbix/zabbix_server.conf
 
     log_info "Zabbix Server configurado para usar GeoIP"
   else
     log_warn "Zabbix Server no encontrado, configuración manual requerida"
+    echo -e "${YELLOW}Agregue manualmente en /etc/zabbix/zabbix_server.conf:${NC}"
+    echo "GeoIPDatabaseFile=${ZABBIX_GEOIP_DIR}/GeoLite2-City.mmdb"
   fi
 }
 
@@ -290,8 +342,14 @@ configure_apache() {
 
   # Configurar CSP para permitir mapas
   if [ -f /etc/httpd/conf.d/zabbix.conf ]; then
-    if ! grep -q "Content-Security-Policy.*services.zabbix.com" /etc/httpd/conf.d/zabbix.conf; then
-      sed -i '/<IfModule mod_headers.c>/a \    Header set Content-Security-Policy "connect-src '\''self'\'' ws: wss: https://services.zabbix.com https://tile.openstreetmap.org https://api.maptiler.com"' /etc/httpd/conf.d/zabbix.conf
+    # Verificar si mod_headers está habilitado
+    if ! grep -q "mod_headers" /etc/httpd/conf.modules.d/*.conf 2>/dev/null; then
+      echo "LoadModule headers_module modules/mod_headers.so" >/etc/httpd/conf.modules.d/00-headers.conf
+    fi
+
+    # Agregar CSP si no existe
+    if ! grep -q "Content-Security-Policy" /etc/httpd/conf.d/zabbix.conf; then
+      sed -i '/<VirtualHost/a \    <IfModule mod_headers.c>\n        Header set Content-Security-Policy "connect-src '\''self'\'' ws: wss: https://services.zabbix.com https://tile.openstreetmap.org https://api.maptiler.com"\n    </IfModule>' /etc/httpd/conf.d/zabbix.conf
     fi
   fi
 
@@ -301,11 +359,14 @@ configure_apache() {
 restart_services() {
   log_step "Reiniciando servicios..."
 
-  systemctl restart httpd 2>/dev/null
-  systemctl restart php-fpm 2>/dev/null
-  systemctl restart zabbix-server 2>/dev/null
+  # Reiniciar Apache
+  systemctl restart httpd 2>/dev/null && log_info "Apache reiniciado" || log_warn "Apache no se pudo reiniciar"
 
-  log_info "Servicios reiniciados"
+  # Reiniciar PHP-FPM
+  systemctl restart php-fpm 2>/dev/null && log_info "PHP-FPM reiniciado" || log_warn "PHP-FPM no se pudo reiniciar"
+
+  # Reiniciar Zabbix Server
+  systemctl restart zabbix-server 2>/dev/null && log_info "Zabbix Server reiniciado" || log_warn "Zabbix Server no se pudo reiniciar"
 }
 
 show_host_update_sql() {
@@ -343,6 +404,23 @@ WHERE inventory IS NOT NULL
 EOF
 
   log_info "Script SQL creado: /root/update_host_coordinates.sql"
+}
+
+test_geoip() {
+  log_step "Probando funcionamiento de GeoIP..."
+
+  if [ -f "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" ]; then
+    log_info "Archivo GeoIP encontrado: $ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb"
+    file "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" >>"$LOG_FILE" 2>&1
+  else
+    log_warn "Archivo GeoIP no encontrado en la ubicación esperada"
+  fi
+
+  # Probar con una IP conocida (opcional, requiere mmdblookup)
+  if command -v mmdblookup &>/dev/null; then
+    log_info "Probando consulta GeoIP con IP 8.8.8.8..."
+    mmdblookup --file "$ZABBIX_GEOIP_DIR/GeoLite2-City.mmdb" --ip 8.8.8.8 country names en 2>/dev/null | head -1
+  fi
 }
 
 show_completion() {
@@ -390,6 +468,9 @@ show_completion() {
   echo -e ""
   echo -e "   # Verificar archivo GeoIP"
   echo -e "   ls -la ${ZABBIX_GEOIP_DIR}/GeoLite2-City.mmdb"
+  echo -e ""
+  echo -e "   # Probar consulta GeoIP"
+  echo -e "   mmdblookup --file ${ZABBIX_GEOIP_DIR}/GeoLite2-City.mmdb --ip 8.8.8.8"
   echo -e ""
   echo -e "${GREEN}============================================${NC}"
   echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}"
@@ -451,4 +532,5 @@ configure_php
 configure_apache
 restart_services
 show_host_update_sql
+test_geoip
 show_completion
