@@ -7,14 +7,14 @@
 # Email: froman@orangebox.cl
 # Descripcion: Instalacion de Zabbix Agent en host remoto
 #              con registro automatico via API
-#              Soporta LAN (red local) y WAN (internet)
-#              Conexion TLS/PSK segura
+#              Modo debug para verificar peticiones API
 # ==============================================
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ==============================================
@@ -22,7 +22,7 @@ NC='\033[0m'
 # ==============================================
 
 # Token de API de Zabbix (dejar vacio para preguntar)
-API_TOKEN=""
+API_TOKEN="b416db4bb91c549b20ac6b22c2b1303429855cd98968130b2393b3ce54e3e7fe"
 
 # Servidor Zabbix (dejar vacio para preguntar)
 ZABBIX_SERVER="monitoreo.orangebox.cl"
@@ -39,20 +39,16 @@ GROUP_ID="2"
 # ID de la plantilla (10001 = Template OS Linux by Zabbix agent)
 TEMPLATE_ID="10001"
 
-# Modo TLS (psk = solo PSK, cert = solo certificados, psk_cert = ambos)
+# Modo TLS (psk = solo PSK)
 TLS_MODE="psk"
 
-# ==============================================
-# URLS DE API POR MODO (NO EDITAR DIRECTAMENTE)
-# ==============================================
-# Estas se construyen automáticamente según el modo
-# LAN: http://${ZABBIX_SERVER}/zabbix/api_jsonrpc.php
-# WAN: https://${ZABBIX_SERVER}/api_jsonrpc.php
-# Si quieres una URL personalizada, edita ZABBIX_API_URL directamente
-# ==============================================
-
-# URL personalizada (si está vacía, se construye según el modo)
+# URL API personalizada (dejar vacia para que se construya según modo)
 ZABBIX_API_URL=""
+
+# ==============================================
+# MODO DEBUG (false = desactivado, true = activado)
+# ==============================================
+DEBUG_MODE=false
 
 # ==============================================
 # FUNCIONES DE AYUDA
@@ -66,46 +62,25 @@ show_help() {
 
   echo -e "${YELLOW}DESCRIPCIÓN:${NC}"
   echo -e "  Instala y configura Zabbix Agent en el host"
-  echo -e "  Registro automático via API de Zabbix"
-  echo -e "  Soporta TLS/PSK para conexión segura\n"
+  echo -e "  Registro automático via API de Zabbix\n"
 
   echo -e "${YELLOW}MODOS DE EJECUCIÓN:${NC}"
   echo -e "  ${GREEN}--lan${NC}      - Modo Red Local (HTTP + /zabbix)"
-  echo -e "                URL API: http://servidor/zabbix/api_jsonrpc.php"
-  echo -e "                Usa IP local del agente para registro\n"
   echo -e "  ${GREEN}--wan${NC}      - Modo Internet (HTTPS + sin /zabbix)"
-  echo -e "                URL API: https://servidor/api_jsonrpc.php"
-  echo -e "                Usa IP pública del agente para registro\n"
-  echo -e "  ${GREEN}--url URL${NC}  - URL personalizada de la API"
-  echo -e "                Ej: --url https://zabbix.midominio.com/api_jsonrpc.php\n"
+  echo -e "  ${GREEN}--url URL${NC}  - URL personalizada de la API\n"
 
-  echo -e "${YELLOW}OPCIONES ADICIONALES:${NC}"
+  echo -e "${YELLOW}OPCIONES:${NC}"
   echo -e "  ${GREEN}--auto${NC}     - Modo automático (no pregunta nada)"
+  echo -e "  ${GREEN}--debug${NC}    - Modo debug (muestra peticiones API)"
   echo -e "  ${GREEN}--help${NC}     - Mostrar esta ayuda\n"
 
-  echo -e "${YELLOW}VARIABLES EDITABLES EN EL SCRIPT:${NC}"
-  echo -e "  API_TOKEN        - Token de API de Zabbix"
-  echo -e "  ZABBIX_SERVER    - Servidor Zabbix (IP o hostname)"
-  echo -e "  ZABBIX_SERVER_PORT - Puerto del servidor (default: 10051)"
-  echo -e "  ZABBIX_AGENT_PORT  - Puerto del agente (default: 10050)"
-  echo -e "  GROUP_ID         - ID del grupo en Zabbix (default: 2)"
-  echo -e "  TEMPLATE_ID      - ID de plantilla (default: 10001)"
-  echo -e "  TLS_MODE         - psk, cert, psk_cert (default: psk)"
-  echo -e "  ZABBIX_API_URL   - URL personalizada (opcional)\n"
-
   echo -e "${YELLOW}EJEMPLOS:${NC}"
-  echo -e "  # Instalación en red local (automático)"
+  echo -e "  # Instalación normal"
+  echo -e "  ${GREEN}./install-zabbix-agent.sh --lan${NC}\n"
+  echo -e "  # Instalación con debug"
+  echo -e "  ${GREEN}./install-zabbix-agent.sh --wan --debug${NC}\n"
+  echo -e "  # Instalación automática sin preguntas"
   echo -e "  ${GREEN}./install-zabbix-agent.sh --lan --auto${NC}\n"
-  echo -e "  # Instalación en internet (pregunta credenciales)"
-  echo -e "  ${GREEN}./install-zabbix-agent.sh --wan${NC}\n"
-  echo -e "  # URL personalizada"
-  echo -e "  ${GREEN}./install-zabbix-agent.sh --url https://zabbix.domain.com/api_jsonrpc.php --auto${NC}\n"
-
-  echo -e "${YELLOW}NOTAS IMPORTANTES:${NC}"
-  echo -e "  • Modo LAN:  Asume que el agente está en la misma red"
-  echo -e "  • Modo WAN:  Usa IP pública y HTTPS, requiere puerto 10051 abierto"
-  echo -e "  • TLS/PSK es obligatorio para modo WAN"
-  echo -e "  • Si las variables están configuradas, no pregunta nada\n"
 
   echo -e "${GREEN}============================================${NC}"
   echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}"
@@ -116,6 +91,32 @@ log_info() { echo -e "${GREEN}[✓]${NC} $1"; }
 log_error() { echo -e "${RED}[✗]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 log_step() { echo -e "\n${BLUE}[*]${NC} $1"; }
+log_debug() {
+  if [ "$DEBUG_MODE" = true ]; then
+    echo -e "${CYAN}[DEBUG]${NC} $1"
+  fi
+}
+
+log_api_request() {
+  if [ "$DEBUG_MODE" = true ]; then
+    echo -e "\n${CYAN}════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}📤 PETICIÓN API:${NC}"
+    echo -e "${CYAN}URL:${NC} $1"
+    echo -e "${CYAN}HEADER:${NC} Authorization: Bearer ${API_TOKEN:0:20}..."
+    echo -e "${CYAN}BODY:${NC}"
+    echo "$2" | jq '.' 2>/dev/null || echo "$2"
+    echo -e "${CYAN}════════════════════════════════════════════════════════${NC}\n"
+  fi
+}
+
+log_api_response() {
+  if [ "$DEBUG_MODE" = true ]; then
+    echo -e "\n${CYAN}════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}📥 RESPUESTA API:${NC}"
+    echo "$1" | jq '.' 2>/dev/null || echo "$1"
+    echo -e "${CYAN}════════════════════════════════════════════════════════${NC}\n"
+  fi
+}
 
 check_root() {
   if [ "$EUID" -ne 0 ]; then
@@ -137,6 +138,7 @@ get_public_ip() {
 
   if [ -n "$PUBLIC_IP" ]; then
     log_info "IP Pública detectada: $PUBLIC_IP"
+    log_debug "Método de detección: múltiples fuentes"
   else
     log_warn "No se pudo detectar IP pública automáticamente"
     read -p "Ingrese la IP pública manualmente: " PUBLIC_IP
@@ -149,6 +151,7 @@ get_local_ip() {
   LOCAL_IP=$(hostname -I | awk '{print $1}')
   if [ -n "$LOCAL_IP" ]; then
     log_info "IP Local detectada: $LOCAL_IP"
+    log_debug "Interfaz principal: $(ip route | grep default | awk '{print $5}')"
   else
     log_error "No se pudo detectar IP local"
     exit 1
@@ -175,7 +178,7 @@ get_server_info() {
   fi
 
   log_info "Servidor Zabbix: $ZABBIX_SERVER"
-  log_info "Token API: ${API_TOKEN:0:20}..."
+  log_debug "Token API: ${API_TOKEN}"
 }
 
 detect_os() {
@@ -192,6 +195,7 @@ detect_os() {
   fi
 
   log_info "Sistema detectado: $OS_NAME"
+  log_debug "OS Family: $OS, Version: $VER"
 
   case $OS in
   centos | rhel | almalinux | rocky | fedora | amzn | ol)
@@ -207,6 +211,8 @@ detect_os() {
     OS_FAMILY="unknown"
     ;;
   esac
+
+  log_debug "Familia OS: $OS_FAMILY"
 }
 
 install_dependencies() {
@@ -214,18 +220,19 @@ install_dependencies() {
 
   case $OS_FAMILY in
   rhel)
-    dnf install -y curl openssl net-tools >>/tmp/zabbix_agent_install.log 2>&1
+    dnf install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   debian)
     apt-get update -qq >>/tmp/zabbix_agent_install.log 2>&1
-    apt-get install -y curl openssl net-tools >>/tmp/zabbix_agent_install.log 2>&1
+    apt-get install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   suse)
-    zypper install -y curl openssl net-tools >>/tmp/zabbix_agent_install.log 2>&1
+    zypper install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   esac
 
   log_info "Dependencias instaladas"
+  log_debug "Paquetes: curl, openssl, net-tools, jq"
 }
 
 install_zabbix_repo() {
@@ -240,8 +247,10 @@ install_zabbix_repo() {
     7*) ZBX_REPO_VERSION="7" ;;
     *) ZBX_REPO_VERSION="9" ;;
     esac
+    log_debug "Repositorio RHEL versión: $ZBX_REPO_VERSION"
     rpm -Uvh "https://repo.zabbix.com/zabbix/7.4/rhel/${ZBX_REPO_VERSION}/x86_64/zabbix-release-latest-7.4.el${ZBX_REPO_VERSION}.noarch.rpm" >>/tmp/zabbix_agent_install.log 2>&1
     if [ $? -ne 0 ]; then
+      log_debug "Falló repo 7.4, intentando 7.2"
       rpm -Uvh "https://repo.zabbix.com/zabbix/7.2/rhel/${ZBX_REPO_VERSION}/x86_64/zabbix-release-latest-7.2.el${ZBX_REPO_VERSION}.noarch.rpm" >>/tmp/zabbix_agent_install.log 2>&1
     fi
     ;;
@@ -269,12 +278,14 @@ install_zabbix_repo() {
       DEB_VERSION="jammy"
       ;;
     esac
+    log_debug "Repositorio Debian versión: $DEB_VERSION"
     wget -q "https://repo.zabbix.com/zabbix/7.4/debian/pool/main/z/zabbix-release/zabbix-release_latest_7.4+${DEB_VERSION}_all.deb" -O /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
     dpkg -i /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
     apt-get update -qq >>/tmp/zabbix_agent_install.log 2>&1
     rm -f /tmp/zabbix-release.deb
     ;;
   suse)
+    log_debug "Repositorio SUSE"
     rpm -Uvh "https://repo.zabbix.com/zabbix/7.4/suse/15/x86_64/zabbix-release-7.4-1.sle15.noarch.rpm" >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   esac
@@ -287,18 +298,23 @@ install_agent() {
 
   case $OS_FAMILY in
   rhel)
+    log_debug "Intentando instalar zabbix-agent2"
     dnf install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1
     if [ $? -ne 0 ]; then
+      log_debug "Falló agent2, intentando agent clásico"
       dnf install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
     fi
     ;;
   debian)
+    log_debug "Intentando instalar zabbix-agent2"
     apt-get install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1
     if [ $? -ne 0 ]; then
+      log_debug "Falló agent2, intentando agent clásico"
       apt-get install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
     fi
     ;;
   suse)
+    log_debug "Instalando zabbix-agent"
     zypper install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   esac
@@ -306,12 +322,18 @@ install_agent() {
   if command -v zabbix_agent2 &>/dev/null; then
     AGENT_TYPE="zabbix_agent2"
     AGENT_SERVICE="zabbix-agent2"
-  else
+    log_info "Zabbix Agent 2 instalado"
+  elif command -v zabbix_agentd &>/dev/null; then
     AGENT_TYPE="zabbix_agentd"
     AGENT_SERVICE="zabbix-agent"
+    log_info "Zabbix Agent clásico instalado"
+  else
+    log_error "No se pudo instalar el agente Zabbix"
+    exit 1
   fi
 
-  log_info "Agente instalado: $AGENT_TYPE"
+  log_debug "Agente tipo: $AGENT_TYPE"
+  log_debug "Servicio: $AGENT_SERVICE"
 }
 
 generate_psk() {
@@ -326,6 +348,8 @@ generate_psk() {
   chmod 600 /etc/zabbix/ssl/psk.key
 
   log_info "PSK generado: $PSK_IDENTITY"
+  log_debug "PSK Key: $PSK_KEY"
+  log_debug "PSK archivo: /etc/zabbix/ssl/psk.key"
 }
 
 generate_self_signed_cert() {
@@ -345,10 +369,12 @@ generate_self_signed_cert() {
   chmod 644 "$CERT_DIR"/zabbix_agent.crt
 
   log_info "Certificado SSL generado (válido por 50 años)"
+  log_debug "Certificado: $CERT_DIR/zabbix_agent.crt"
+  log_debug "Clave privada: $CERT_DIR/zabbix_agent.key"
 }
 
 configure_agent() {
-  log_step "Configurando Zabbix Agent..."
+  log_step "Configurando Zabbix Agent (modo PASIVO)..."
 
   local CONFIG_FILE=""
   if [ "$AGENT_TYPE" = "zabbix_agent2" ]; then
@@ -357,10 +383,10 @@ configure_agent() {
     CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
   fi
 
-  cp "$CONFIG_FILE" "${CONFIG_FILE}.backup"
+  cp "$CONFIG_FILE" "${CONFIG_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
 
   cat >"$CONFIG_FILE" <<EOF
-# Configuracion Zabbix Agent
+# Configuracion Zabbix Agent - MODO PASIVO
 # Generado: $(date)
 # Modo: ${MODE_NAME}
 
@@ -385,6 +411,9 @@ Timeout=30
 EOF
 
   log_info "Agente configurado"
+  log_debug "Archivo de configuración: $CONFIG_FILE"
+  log_debug "Servidor: $ZABBIX_SERVER"
+  log_debug "Puerto agente: $ZABBIX_AGENT_PORT"
 }
 
 configure_firewall() {
@@ -394,11 +423,13 @@ configure_firewall() {
     firewall-cmd --permanent --add-port=${ZABBIX_AGENT_PORT}/tcp >>/tmp/zabbix_agent_install.log 2>&1
     firewall-cmd --reload >>/tmp/zabbix_agent_install.log 2>&1
     log_info "Firewalld: puerto ${ZABBIX_AGENT_PORT}/tcp abierto"
+    log_debug "Comando: firewall-cmd --permanent --add-port=${ZABBIX_AGENT_PORT}/tcp"
   elif command -v ufw &>/dev/null; then
     ufw allow ${ZABBIX_AGENT_PORT}/tcp >>/tmp/zabbix_agent_install.log 2>&1
     log_info "UFW: puerto ${ZABBIX_AGENT_PORT}/tcp abierto"
+    log_debug "Comando: ufw allow ${ZABBIX_AGENT_PORT}/tcp"
   else
-    log_warn "Firewall no detectado, asegure que el puerto ${ZABBIX_AGENT_PORT} esté accesible"
+    log_warn "Firewall no detectado, configure manualmente el puerto ${ZABBIX_AGENT_PORT}"
   fi
 }
 
@@ -406,24 +437,32 @@ test_api_connection() {
   log_step "Probando conexión a la API de Zabbix..."
 
   log_info "URL API: $ZABBIX_API_URL"
+  log_debug "Método: apiinfo.version"
 
-  local TEST_RESPONSE=$(curl -s -k -X POST \
+  local JSON_PAYLOAD='{
+    "jsonrpc": "2.0",
+    "method": "apiinfo.version",
+    "params": [],
+    "id": 1
+  }'
+
+  log_api_request "$ZABBIX_API_URL" "$JSON_PAYLOAD"
+
+  local RESPONSE=$(curl -s -k -X POST \
     -H "Content-Type: application/json-rpc" \
-    -d "{
-      \"jsonrpc\": \"2.0\",
-      \"method\": \"apiinfo.version\",
-      \"params\": [],
-      \"id\": 1
-    }" \
-    "${ZABBIX_API_URL}" 2>/dev/null)
+    -d "$JSON_PAYLOAD" \
+    "${ZABBIX_API_URL}")
 
-  if echo "$TEST_RESPONSE" | grep -q '"result"'; then
-    local API_VERSION=$(echo "$TEST_RESPONSE" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
+  log_api_response "$RESPONSE"
+
+  if echo "$RESPONSE" | grep -q '"result"'; then
+    local API_VERSION=$(echo "$RESPONSE" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
     log_info "API accesible (versión: $API_VERSION)"
     return 0
   else
     log_error "No se pudo conectar a la API"
     log_error "URL: $ZABBIX_API_URL"
+    log_error "Respuesta: $RESPONSE"
     return 1
   fi
 }
@@ -433,6 +472,9 @@ register_host() {
 
   log_info "IP del agente: $AGENT_IP"
   log_info "Hostname: $HOSTNAME"
+  log_debug "Group ID: $GROUP_ID"
+  log_debug "Template ID: $TEMPLATE_ID"
+  log_debug "TLS Mode: $TLS_MODE"
 
   local JSON_PAYLOAD=$(
     cat <<EOF
@@ -457,23 +499,42 @@ register_host() {
         "tls_psk_identity": "${PSK_IDENTITY}",
         "tls_psk": "${PSK_KEY}"
     },
-    "auth": "${API_TOKEN}",
     "id": 1
 }
 EOF
   )
 
+  log_api_request "$ZABBIX_API_URL" "$JSON_PAYLOAD"
+
   local RESPONSE=$(curl -s -k -X POST \
     -H "Content-Type: application/json-rpc" \
+    -H "Authorization: Bearer ${API_TOKEN}" \
     -d "$JSON_PAYLOAD" \
     "${ZABBIX_API_URL}")
+
+  log_api_response "$RESPONSE"
 
   if echo "$RESPONSE" | grep -q '"hostids"'; then
     local HOST_ID=$(echo "$RESPONSE" | grep -o '"hostids":\["[0-9]*"' | grep -o '[0-9]*')
     log_info "Host '${HOSTNAME}' registrado exitosamente (ID: ${HOST_ID})"
     log_info "IP registrada: ${AGENT_IP}"
   else
-    log_error "Error al registrar host: $RESPONSE"
+    log_error "Error al registrar host"
+
+    # Analizar el tipo de error
+    if echo "$RESPONSE" | grep -q "Unauthorized"; then
+      log_error "Token de API inválido o expirado"
+      log_error "Verifique que el token sea correcto y tenga permisos de escritura"
+    elif echo "$RESPONSE" | grep -q "Invalid request"; then
+      log_error "Error en la petición. Verifique la URL de la API"
+      log_error "URL actual: $ZABBIX_API_URL"
+    elif echo "$RESPONSE" | grep -q "permission denied"; then
+      log_error "El token no tiene permisos para crear hosts"
+    elif echo "$RESPONSE" | grep -q "already exists"; then
+      log_warn "El host ya existe en Zabbix"
+    else
+      log_error "Respuesta completa: $RESPONSE"
+    fi
   fi
 }
 
@@ -485,8 +546,10 @@ start_agent() {
 
   if systemctl is-active "$AGENT_SERVICE" &>/dev/null; then
     log_info "Agente iniciado correctamente"
+    log_debug "Estado: $(systemctl is-active $AGENT_SERVICE)"
   else
     log_error "Error al iniciar agente"
+    systemctl status "$AGENT_SERVICE" --no-pager
     exit 1
   fi
 }
@@ -496,6 +559,7 @@ test_connection() {
 
   if ss -tlnp | grep -q ":${ZABBIX_AGENT_PORT}"; then
     log_info "Agente escuchando en puerto ${ZABBIX_AGENT_PORT}"
+    log_debug "Conexiones: $(ss -tlnp | grep :${ZABBIX_AGENT_PORT})"
   else
     log_warn "Agente no está escuchando en puerto ${ZABBIX_AGENT_PORT}"
   fi
@@ -507,6 +571,7 @@ save_credentials() {
   cat >"$CRED_FILE" <<EOF
 =============================================
   ZABBIX AGENT - CREDENCIALES
+  Instalacion: $(date)
 =============================================
 
 📍 HOST:
@@ -520,7 +585,7 @@ save_credentials() {
   Archivo: /etc/zabbix/ssl/psk.key
 
 🌐 CONEXION:
-  Servidor: ${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
+  Servidor Zabbix: ${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
   Puerto agente: ${ZABBIX_AGENT_PORT}
   URL API: ${ZABBIX_API_URL}
 
@@ -536,6 +601,7 @@ EOF
 
   chmod 600 "$CRED_FILE"
   log_info "Credenciales guardadas: $CRED_FILE"
+  log_debug "Archivo de credenciales: $CRED_FILE"
 }
 
 show_completion() {
@@ -549,6 +615,12 @@ show_completion() {
   echo -e "  • IP: ${GREEN}${AGENT_IP}${NC}"
   echo -e "  • Servidor: ${GREEN}${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}${NC}"
   echo -e "  • URL API: ${GREEN}${ZABBIX_API_URL}${NC}"
+
+  if [ "$DEBUG_MODE" = true ]; then
+    echo -e "\n${YELLOW}🔍 MODO DEBUG ACTIVADO${NC}"
+    echo -e "  Las peticiones API se mostraron en detalle"
+    echo -e "  Log de instalación: /tmp/zabbix_agent_install.log"
+  fi
 
   echo -e "\n${YELLOW}📋 EN ZABBIX WEB:${NC}"
   echo -e "  Configuración → Hosts → ${HOSTNAME}"
@@ -584,6 +656,10 @@ while [[ $# -gt 0 ]]; do
     AUTO_MODE=true
     shift
     ;;
+  --debug)
+    DEBUG_MODE=true
+    shift
+    ;;
   --help | -h)
     show_help
     exit 0
@@ -603,6 +679,9 @@ done
 clear
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Instalador de Agente Zabbix${NC}"
+if [ "$DEBUG_MODE" = true ]; then
+  echo -e "${CYAN}  MODO DEBUG ACTIVADO${NC}"
+fi
 echo -e "${GREEN}============================================${NC}\n"
 
 check_root
@@ -672,7 +751,13 @@ else
     exit 1
   fi
   log_info "Modo automático: usando variables preconfiguradas"
+  log_debug "API_TOKEN: ${API_TOKEN:0:20}..."
+  log_debug "ZABBIX_SERVER: $ZABBIX_SERVER"
 fi
+
+# Hostname
+HOSTNAME=$(hostname -f 2>/dev/null || hostname)
+log_debug "Hostname final: $HOSTNAME"
 
 # Verificar conexión a la API
 if ! test_api_connection; then
@@ -686,6 +771,11 @@ install_dependencies
 install_zabbix_repo
 install_agent
 generate_psk
+
+if [ "$TLS_MODE" = "cert" ] || [ "$TLS_MODE" = "psk_cert" ]; then
+  generate_self_signed_cert
+fi
+
 configure_agent
 configure_firewall
 register_host
