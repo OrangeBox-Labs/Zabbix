@@ -9,7 +9,6 @@
 #              con MySQL/MariaDB, Apache y SELinux
 #              Incluye hardening de MySQL y tuning para ~200 servidores
 #              Configura locales: en_US, es_ES, es_CL
-#              Optimizacion: skip_name_resolve y conexion por 127.0.0.1
 # ==============================================
 
 RED='\033[0;31m'
@@ -36,6 +35,9 @@ LOG_FILE="/root/zabbix_install_$(date +%Y%m%d_%H%M%S).log"
 DB_PASSWORD=""
 MYSQL_ROOT_PASSWORD=""
 MYSQL_ALREADY_INSTALLED=false
+MYSQL_HAS_ROOT_PASSWORD=false
+ZABBIX_ALREADY_INSTALLED=false
+DB_HOST_TYPE="localhost"
 
 # ==============================================
 # FUNCIONES
@@ -46,6 +48,8 @@ show_usage() {
   echo "  $0                                    - Instalacion interactiva"
   echo "  $0 --auto                             - Instalacion automatica"
   echo "  $0 --agent                            - Instalar solo Zabbix Agent"
+  echo "  $0 --uninstall                        - Desinstalar Zabbix completamente"
+  echo "  $0 --reinstall                        - Reinstalar desde cero (desinstala y vuelve a instalar)"
   echo "  $0 --no-tune                          - No aplicar tuning a MySQL"
   echo "  $0 --help                             - Mostrar esta ayuda"
   echo ""
@@ -56,8 +60,8 @@ show_usage() {
   echo "  # Instalacion automatica"
   echo "  ./install-zabbix-server.sh --auto"
   echo ""
-  echo "  # Instalar solo el agente"
-  echo "  ./install-zabbix-server.sh --agent"
+  echo "  # Reinstalar completamente"
+  echo "  ./install-zabbix-server.sh --reinstall"
   echo ""
 }
 
@@ -77,9 +81,10 @@ log_step() {
   echo -e "\n${BLUE}[*]${NC} $1" | tee -a "$LOG_FILE"
 }
 
-generate_password() {
+generate_safe_password() {
   local length=${1:-24}
-  tr -dc 'A-Za-z0-9!?@#%$&*' </dev/urandom 2>/dev/null | head -c "$length"
+  # Solo caracteres alfanumericos y algunos seguros: A-Za-z0-9._-
+  tr -dc 'A-Za-z0-9._-' </dev/urandom 2>/dev/null | head -c "$length"
 }
 
 confirm_password() {
@@ -97,15 +102,15 @@ confirm_password() {
     eval "$var_name='$generated'"
     echo -e "${GREEN}  ✓ Usando password generada${NC}"
   else
-    echo -e "${YELLOW}  Ingrese la nueva password:${NC}"
+    echo -e "${YELLOW}  Ingrese la nueva password (solo letras, numeros, . _ -):${NC}"
     read -r -s user_input
     echo -e "${YELLOW}  Confirme la password:${NC}"
     read -r -s user_input2
-    if [ "$user_input" = "$user_input2" ] && [ -n "$user_input" ]; then
+    if [ "$user_input" = "$user_input2" ] && [ -n "$user_input" ] && [[ "$user_input" =~ ^[A-Za-z0-9._-]+$ ]]; then
       eval "$var_name='$user_input'"
       echo -e "${GREEN}  ✓ Password personalizada configurada${NC}"
     else
-      echo -e "${RED}  ✗ Las passwords no coinciden o estan vacias. Usando generada.${NC}"
+      echo -e "${RED}  ✗ Las passwords no coinciden, estan vacias o tienen caracteres invalidos. Usando generada.${NC}"
       eval "$var_name='$generated'"
     fi
   fi
@@ -143,6 +148,50 @@ init_log() {
   log_info "Log de instalacion: $LOG_FILE"
 }
 
+check_zabbix_installed() {
+  if command -v zabbix_server &>/dev/null || [ -f /etc/zabbix/zabbix_server.conf ]; then
+    ZABBIX_ALREADY_INSTALLED=true
+    log_warn "Se detecto una instalacion previa de Zabbix"
+    return 0
+  else
+    ZABBIX_ALREADY_INSTALLED=false
+    return 1
+  fi
+}
+
+uninstall_zabbix() {
+  log_step "Desinstalando Zabbix completamente..."
+
+  # Detener servicios
+  systemctl stop zabbix-server zabbix-agent httpd php-fpm 2>/dev/null
+  systemctl disable zabbix-server zabbix-agent httpd php-fpm 2>/dev/null
+
+  # Eliminar paquetes
+  dnf remove -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent 2>/dev/null
+
+  # Eliminar archivos de configuracion
+  rm -rf /etc/zabbix
+  rm -rf /usr/share/zabbix
+  rm -rf /var/lib/zabbix
+  rm -rf /var/log/zabbix
+
+  # Eliminar base de datos (preguntar)
+  if mysql --defaults-file=/root/.my.cnf -e "SELECT 1" &>/dev/null; then
+    echo -e "${YELLOW}¿Desea eliminar la base de datos zabbix? (s/N): ${NC}"
+    read -r confirm
+    if [[ "$confirm" =~ ^[Ss]$ ]]; then
+      mysql --defaults-file=/root/.my.cnf -e "DROP DATABASE IF EXISTS zabbix;"
+      mysql --defaults-file=/root/.my.cnf -e "DROP USER IF EXISTS 'zabbix'@'localhost'; DROP USER IF EXISTS 'zabbix'@'127.0.0.1';"
+      log_info "Base de datos y usuario eliminados"
+    fi
+  fi
+
+  # Eliminar archivos de tuning
+  rm -f /etc/my.cnf.d/zabbix-tuning.cnf
+
+  log_info "Zabbix desinstalado correctamente"
+}
+
 check_mysql_installed() {
   log_step "Verificando instalacion de MySQL/MariaDB..."
 
@@ -150,12 +199,20 @@ check_mysql_installed() {
     MYSQL_ALREADY_INSTALLED=true
     log_info "MySQL/MariaDB ya esta instalado"
 
+    # Verificar si root tiene password
     if mysql -uroot -e "SELECT 1" &>/dev/null; then
-      log_info "MySQL/MariaDB esta accesible (sin password)"
+      MYSQL_HAS_ROOT_PASSWORD=false
+      log_info "MySQL accesible sin password root"
     elif [ -f /root/.my.cnf ] && mysql --defaults-file=/root/.my.cnf -e "SELECT 1" &>/dev/null; then
-      log_info "MySQL/MariaDB esta accesible (con archivo de configuracion)"
+      MYSQL_HAS_ROOT_PASSWORD=true
+      log_info "MySQL accesible con archivo de configuracion"
+      # Extraer password del archivo .my.cnf
+      MYSQL_ROOT_PASSWORD=$(grep "^password" /root/.my.cnf 2>/dev/null | cut -d= -f2 | tr -d ' ')
     else
-      log_warn "MySQL/MariaDB instalado pero no se puede acceder como root"
+      log_warn "MySQL instalado pero no se puede acceder como root"
+      MYSQL_HAS_ROOT_PASSWORD=true
+      echo -e "${YELLOW}Ingrese la password actual de root de MySQL:${NC}"
+      read -r -s OLD_MYSQL_ROOT_PASSWORD
     fi
   else
     MYSQL_ALREADY_INSTALLED=false
@@ -202,9 +259,10 @@ setup_mysql_root_password() {
   log_step "Configurando password de root de MySQL..."
 
   if [ "$MYSQL_ALREADY_INSTALLED" = true ]; then
-    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-      mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1 2>/dev/null ||
-        mysql -uroot -p"${OLD_MYSQL_ROOT_PASSWORD}" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';" >>"$LOG_FILE" 2>&1
+    if [ "$MYSQL_HAS_ROOT_PASSWORD" = false ]; then
+      mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1
+    else
+      mysql -uroot -p"${OLD_MYSQL_ROOT_PASSWORD}" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';" >>"$LOG_FILE" 2>&1
     fi
   else
     mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1
@@ -218,6 +276,22 @@ EOF
   chmod 600 /root/.my.cnf
 
   log_info "Password de root de MySQL configurado"
+}
+
+determine_db_connection() {
+  log_step "Determinando metodo optimo de conexion a MySQL..."
+
+  # Verificar si podemos usar socket (mas rapido y seguro)
+  if [ -S /var/lib/mysql/mysql.sock ]; then
+    DB_HOST_TYPE="localhost"
+    log_info "Usando conexion por socket Unix (localhost) - optimo para rendimiento"
+  elif [ -S /var/run/mysqld/mysqld.sock ]; then
+    DB_HOST_TYPE="localhost"
+    log_info "Usando conexion por socket Unix (localhost) - optimo para rendimiento"
+  else
+    DB_HOST_TYPE="127.0.0.1"
+    log_warn "Socket no encontrado, usando TCP/IP (127.0.0.1)"
+  fi
 }
 
 configure_mysql_tuning() {
@@ -306,36 +380,11 @@ EOF
   log_info "Tuning de MySQL aplicado: buffer_pool=${INNODB_BUFFER_POOL_SIZE}, max_connections=500"
 }
 
-configure_mysql_skip_resolve() {
-  log_step "Configurando MySQL para optimizar resolucion de nombres..."
-
-  local MYSQL_OPTIONS_FILE="/etc/my.cnf.d/zabbix-network.cnf"
-
-  cat >"$MYSQL_OPTIONS_FILE" <<EOF
-# ==============================================
-# Optimizacion de red MySQL para Zabbix
-# Deshabilita resolucion de nombres DNS
-# ==============================================
-[mysqld]
-skip_name_resolve = 1
-EOF
-
-  # Actualizar el archivo de tuning si existe
-  if [ -f /etc/my.cnf.d/zabbix-tuning.cnf ]; then
-    if ! grep -q "skip_name_resolve" /etc/my.cnf.d/zabbix-tuning.cnf; then
-      echo "skip_name_resolve = 1" >>/etc/my.cnf.d/zabbix-tuning.cnf
-    fi
-  fi
-
-  systemctl restart mariadb >>"$LOG_FILE" 2>&1
-  log_info "MySQL configurado con skip_name_resolve=1 (mejora performance de conexiones)"
-}
-
 setup_passwords() {
   log_step "Configurando passwords..."
 
-  local random_db_pass=$(generate_password 24)
-  local random_mysql_root_pass=$(generate_password 24)
+  local random_db_pass=$(generate_safe_password 24)
+  local random_mysql_root_pass=$(generate_safe_password 24)
 
   if [ "$AUTO_MODE" = true ]; then
     DB_PASSWORD="$random_db_pass"
@@ -346,8 +395,14 @@ setup_passwords() {
     echo -e "${YELLOW}  CONFIGURACION DE PASSWORDS${NC}"
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
+    # Solo pedir password de MySQL si ya existe una instalacion previa con password
+    if [ "$MYSQL_ALREADY_INSTALLED" = true ] && [ "$MYSQL_HAS_ROOT_PASSWORD" = true ] && [ -z "$MYSQL_ROOT_PASSWORD" ]; then
+      echo -e "${YELLOW}MySQL ya tiene password configurada. Se mantendra la existente.${NC}"
+    else
+      confirm_password "Password para usuario root de MySQL" "$random_mysql_root_pass" "MYSQL_ROOT_PASSWORD"
+    fi
+
     confirm_password "Password para usuario Zabbix en MySQL" "$random_db_pass" "DB_PASSWORD"
-    confirm_password "Password para usuario root de MySQL" "$random_mysql_root_pass" "MYSQL_ROOT_PASSWORD"
 
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
   fi
@@ -370,7 +425,7 @@ configure_repository() {
 
 install_server() {
   log_step "Instalando Zabbix Server, frontend y agente..."
-  dnf install -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent zabbix-get >>"$LOG_FILE" 2>&1
+  dnf install -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent >>"$LOG_FILE" 2>&1
   log_info "Paquetes de Zabbix instalados"
 }
 
@@ -383,20 +438,22 @@ install_agent_only() {
 create_database() {
   log_step "Creando base de datos para Zabbix..."
 
+  # Determinar conexion optima
+  determine_db_connection
+
+  # Crear usuario y base de datos
   mysql --defaults-file=/root/.my.cnf <<EOF
 create database if not exists zabbix character set utf8mb4 collate utf8mb4_bin;
-create user if not exists zabbix@localhost identified by '${DB_PASSWORD}';
-create user if not exists zabbix@127.0.0.1 identified by '${DB_PASSWORD}';
-grant all privileges on zabbix.* to zabbix@localhost;
-grant all privileges on zabbix.* to zabbix@127.0.0.1;
+create user if not exists zabbix@${DB_HOST_TYPE} identified by '${DB_PASSWORD}';
+grant all privileges on zabbix.* to zabbix@${DB_HOST_TYPE};
 set global log_bin_trust_function_creators = 1;
 flush privileges;
 EOF
 
-  log_info "Base de datos y usuarios creados (localhost y 127.0.0.1)"
+  log_info "Base de datos y usuario creados"
 
   log_step "Importando esquema inicial..."
-  zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -p${DB_PASSWORD} zabbix >>"$LOG_FILE" 2>&1
+  zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -p${DB_PASSWORD} -h ${DB_HOST_TYPE} zabbix >>"$LOG_FILE" 2>&1
 
   mysql --defaults-file=/root/.my.cnf <<EOF
 set global log_bin_trust_function_creators = 0;
@@ -409,13 +466,13 @@ EOF
 configure_server() {
   log_step "Configurando Zabbix Server..."
 
-  # Usar 127.0.0.1 en lugar de localhost para evitar resolucion DNS
-  sed -i "s/^# DBHost=.*/DBHost=127.0.0.1/" /etc/zabbix/zabbix_server.conf
-  sed -i "s/^DBHost=.*/DBHost=127.0.0.1/" /etc/zabbix/zabbix_server.conf
+  # Usar la conexion optima
+  sed -i "s/^# DBHost=.*/DBHost=${DB_HOST_TYPE}/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^DBHost=.*/DBHost=${DB_HOST_TYPE}/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^# DBPassword=.*/DBPassword=${DB_PASSWORD}/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^DBPassword=.*/DBPassword=${DB_PASSWORD}/" /etc/zabbix/zabbix_server.conf
 
-  # Ajustes de rendimiento para ~200 servidores
+  # Ajustes de rendimiento
   sed -i "s/^# StartPollers=.*/StartPollers=40/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^# StartPollersUnreachable=.*/StartPollersUnreachable=10/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^# StartTrappers=.*/StartTrappers=20/" /etc/zabbix/zabbix_server.conf
@@ -427,7 +484,44 @@ configure_server() {
   sed -i "s/^# ValueCacheSize=.*/ValueCacheSize=128M/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^# Timeout=.*/Timeout=10/" /etc/zabbix/zabbix_server.conf
 
-  log_info "Zabbix Server configurado (DBHost=127.0.0.1, pollers=40, trappers=20, cache=256M)"
+  log_info "Zabbix Server configurado (pollers=40, trappers=20, cache=256M, db_host=${DB_HOST_TYPE})"
+}
+
+configure_web() {
+  log_step "Configurando interfaz web de Zabbix..."
+
+  # Crear archivo de configuracion web si no existe
+  local WEB_CONFIG="/etc/zabbix/web/zabbix.conf.php"
+
+  mkdir -p /etc/zabbix/web
+
+  cat >"$WEB_CONFIG" <<EOF
+<?php
+// Zabbix GUI configuration file.
+global \$DB;
+
+\$DB['TYPE']     = 'MYSQL';
+\$DB['SERVER']   = '${DB_HOST_TYPE}';
+\$DB['PORT']     = '0';
+\$DB['DATABASE'] = 'zabbix';
+\$DB['USER']     = 'zabbix';
+\$DB['PASSWORD'] = '${DB_PASSWORD}';
+
+// Schema name. Used for IBM DB2 and PostgreSQL.
+\$DB['SCHEMA'] = '';
+
+\$ZBX_SERVER      = 'localhost';
+\$ZBX_SERVER_PORT = '10051';
+\$ZBX_SERVER_NAME = '';
+
+\$IMAGE_FORMAT_DEFAULT = IMAGE_FORMAT_PNG;
+?>
+EOF
+
+  chmod 640 "$WEB_CONFIG"
+  chown apache:apache "$WEB_CONFIG"
+
+  log_info "Configuracion web creada en: $WEB_CONFIG"
 }
 
 configure_agent() {
@@ -444,7 +538,6 @@ configure_agent() {
 configure_locales() {
   log_step "Configurando locales del sistema..."
 
-  log_info "Instalando paquetes de idiomas..."
   dnf install -y langpacks-en langpacks-es glibc-langpack-en glibc-langpack-es >>"$LOG_FILE" 2>&1
 
   local LOCALES=(
@@ -476,10 +569,6 @@ EOF
   if [ -f /etc/httpd/conf.d/zabbix.conf ]; then
     sed -i "s/^; php_value date.timezone.*/php_value date.timezone America\/Santiago/" /etc/httpd/conf.d/zabbix.conf
     sed -i "s/^# php_value date.timezone.*/php_value date.timezone America\/Santiago/" /etc/httpd/conf.d/zabbix.conf
-
-    if ! grep -q "php_value locale" /etc/httpd/conf.d/zabbix.conf; then
-      sed -i "/php_value date.timezone/a \    php_value default_charset UTF-8\n    php_value locale en_US.UTF-8" /etc/httpd/conf.d/zabbix.conf
-    fi
   fi
 
   log_info "Locales configurados: en_US.UTF-8, es_ES.UTF-8, es_CL.UTF-8"
@@ -512,16 +601,12 @@ verify_mysql_tuning() {
 
   local buffer_pool=$(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size';" 2>/dev/null | awk 'NR==2 {print $2}')
   local max_conn=$(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'max_connections';" 2>/dev/null | awk 'NR==2 {print $2}')
-  local skip_resolve=$(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'skip_name_resolve';" 2>/dev/null | awk 'NR==2 {print $2}')
 
   if [ -n "$buffer_pool" ]; then
     log_info "InnoDB Buffer Pool: $buffer_pool bytes"
   fi
   if [ -n "$max_conn" ]; then
     log_info "Max Connections: $max_conn"
-  fi
-  if [ "$skip_resolve" = "ON" ] || [ "$skip_resolve" = "1" ]; then
-    log_info "skip_name_resolve: ACTIVADO"
   fi
 }
 
@@ -531,11 +616,6 @@ verify_locales() {
   echo -e "\n${YELLOW}Locales disponibles:${NC}"
   locale -a | grep -E "en_US|es_ES|es_CL" | while read line; do
     echo -e "  ${GREEN}✓${NC} $line"
-  done
-
-  echo -e "\n${YELLOW}Configuracion actual del sistema:${NC}"
-  locale | while read line; do
-    echo -e "  ${BLUE}→${NC} $line"
   done
 }
 
@@ -562,7 +642,7 @@ create_credentials_file() {
   Usuario Zabbix DB: zabbix
   Password Zabbix DB: ${DB_PASSWORD}
   Base de datos: zabbix
-  Conexion: 127.0.0.1 (optimizado, sin resolucion DNS)
+  Tipo conexion: ${DB_HOST_TYPE}
 
 🌐 LOCALES CONFIGURADOS:
   - en_US.UTF-8 (Ingles - Sistema)
@@ -577,10 +657,8 @@ create_credentials_file() {
   MySQL Tuning:
     - InnoDB Buffer Pool: $(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size';" 2>/dev/null | awk 'NR==2 {print $2}' || echo "N/A")
     - Max Connections: $(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'max_connections';" 2>/dev/null | awk 'NR==2 {print $2}' || echo "N/A")
-    - skip_name_resolve: $(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'skip_name_resolve';" 2>/dev/null | awk 'NR==2 {print $2}' || echo "N/A")
   
   Zabbix Server Tuning:
-    - DBHost: 127.0.0.1
     - StartPollers: 40
     - StartTrappers: 20
     - CacheSize: 256M
@@ -588,14 +666,15 @@ create_credentials_file() {
 
 📁 ARCHIVOS DE CONFIGURACION:
   Zabbix Server: /etc/zabbix/zabbix_server.conf
+  Zabbix Web: /etc/zabbix/web/zabbix.conf.php
   Zabbix Agent: /etc/zabbix/zabbix_agentd.conf
   MySQL Tuning: /etc/my.cnf.d/zabbix-tuning.cnf
-  MySQL Network: /etc/my.cnf.d/zabbix-network.cnf
   Apache: /etc/httpd/conf.d/zabbix.conf
   Locales: /etc/locale.conf
 
 📋 LOGS:
   Zabbix Server: /var/log/zabbix/zabbix_server.log
+  Zabbix Web Error: /var/log/httpd/error_log
   Zabbix Agent: /var/log/zabbix/zabbix_agentd.log
   MySQL: /var/log/mariadb/mariadb.log
   Slow Queries: /var/log/mariadb/slow-queries.log
@@ -614,7 +693,7 @@ tail -f /var/log/mariadb/slow-queries.log
 
 # Conectar a MySQL
 mysql --defaults-file=/root/.my.cnf
-mysql -uzabbix -p'${DB_PASSWORD}' -h 127.0.0.1 zabbix
+mysql -uzabbix -p'${DB_PASSWORD}' -h ${DB_HOST_TYPE} zabbix
 
 # Verificar locales
 locale -a | grep -E "en_US|es_ES|es_CL"
@@ -664,10 +743,6 @@ show_completion() {
   echo -e "  - en_US.UTF-8 (Ingles)" | tee -a "$LOG_FILE"
   echo -e "  - es_ES.UTF-8 (Español - España)" | tee -a "$LOG_FILE"
   echo -e "  - es_CL.UTF-8 (Español - Chile)" | tee -a "$LOG_FILE"
-  echo -e "\n${YELLOW}OPTIMIZACIONES APLICADAS:${NC}" | tee -a "$LOG_FILE"
-  echo -e "  - skip_name_resolve=1 (sin lookup DNS)" | tee -a "$LOG_FILE"
-  echo -e "  - DBHost=127.0.0.1 (conexion directa por IP)" | tee -a "$LOG_FILE"
-  echo -e "  - Usuario zabbix@127.0.0.1 creado" | tee -a "$LOG_FILE"
   echo -e "\n${GREEN}============================================${NC}" | tee -a "$LOG_FILE"
   echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}" | tee -a "$LOG_FILE"
   echo -e "${GREEN}============================================${NC}\n" | tee -a "$LOG_FILE"
@@ -679,6 +754,8 @@ show_completion() {
 
 AUTO_MODE=false
 AGENT_ONLY=false
+UNINSTALL=false
+REINSTALL=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -689,6 +766,14 @@ while [[ $# -gt 0 ]]; do
   --agent)
     AGENT_ONLY=true
     INSTALL_TYPE="agent"
+    shift
+    ;;
+  --uninstall)
+    UNINSTALL=true
+    shift
+    ;;
+  --reinstall)
+    REINSTALL=true
     shift
     ;;
   --no-tune)
@@ -717,22 +802,35 @@ echo -e "${GREEN}  Instalador de Zabbix Server 7.4${NC}"
 echo -e "${GREEN}  para AlmaLinux 10${NC}"
 echo -e "${GREEN}  Optimizado para ~200 servidores${NC}"
 echo -e "${GREEN}  Locales: en_US, es_ES, es_CL${NC}"
-echo -e "${GREEN}  Optimizacion: skip_name_resolve + 127.0.0.1${NC}"
 echo -e "${GREEN}============================================${NC}\n"
 
 check_root
 detect_os
 init_log
 
+# Manejar desinstalacion
+if [ "$UNINSTALL" = true ]; then
+  uninstall_zabbix
+  exit 0
+fi
+
+# Manejar reinstalacion
+if [ "$REINSTALL" = true ]; then
+  check_zabbix_installed
+  if [ "$ZABBIX_ALREADY_INSTALLED" = true ]; then
+    uninstall_zabbix
+  fi
+  # Continuar con instalacion limpia
+fi
+
 if [ "$AGENT_ONLY" = false ]; then
   check_mysql_installed
   setup_passwords
 fi
 
-if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ]; then
+if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ] && [ "$REINSTALL" = false ]; then
   echo -e "${YELLOW}Este script instalara Zabbix Server 7.4 con:${NC}"
   echo -e "  • MariaDB con hardening y tuning (buffer_pool: 2-4GB, max_connections: 500)"
-  echo -e "  • Optimizacion: skip_name_resolve=1 y conexion por 127.0.0.1"
   echo -e "  • Apache Web Server"
   echo -e "  • PHP-FPM"
   echo -e "  • Zabbix Server (configurado para ~200 servidores)"
@@ -761,11 +859,11 @@ else
   setup_mysql_root_password
   secure_mariadb
   configure_mysql_tuning
-  configure_mysql_skip_resolve
   configure_repository
   install_server
   create_database
   configure_server
+  configure_web
   configure_agent
   configure_locales
   start_services
