@@ -105,8 +105,10 @@ confirm_password() {
   else
     echo -e "${YELLOW}  Ingrese la nueva password (solo letras, numeros, . _ -):${NC}"
     read -r -s user_input
+    echo ""
     echo -e "${YELLOW}  Confirme la password:${NC}"
     read -r -s user_input2
+    echo ""
     if [ "$user_input" = "$user_input2" ] && [ -n "$user_input" ] && [[ "$user_input" =~ ^[A-Za-z0-9._-]+$ ]]; then
       eval "$var_name='$user_input'"
       echo -e "${GREEN}  ✓ Password personalizada configurada${NC}"
@@ -147,6 +149,106 @@ init_log() {
   echo "==============================================" >>"$LOG_FILE"
   echo "" >>"$LOG_FILE"
   log_info "Log de instalacion: $LOG_FILE"
+}
+
+validate_mysql_root_password() {
+  local password="$1"
+  local max_attempts=3
+  local attempt=1
+
+  log_step "Validando contraseña de root de MySQL..."
+
+  while [ $attempt -le $max_attempts ]; do
+    echo -e "${YELLOW}Intento $attempt de $max_attempts${NC}"
+
+    if mysql -uroot -p"${password}" -e "SELECT 1" >/dev/null 2>&1; then
+      log_info "✓ Contraseña de root válida"
+      MYSQL_ROOT_PASSWORD="$password"
+
+      # Guardar en archivo .my.cnf
+      cat >/root/.my.cnf <<EOF
+[client]
+user=root
+password=${password}
+EOF
+      chmod 600 /root/.my.cnf
+      return 0
+    else
+      log_error "✗ Contraseña incorrecta o no se puede conectar"
+
+      if [ $attempt -lt $max_attempts ]; then
+        echo -e "${YELLOW}Ingrese la contraseña correcta de root de MySQL:${NC}"
+        read -r -s password
+        echo ""
+      fi
+      ((attempt++))
+    fi
+  done
+
+  log_error "No se pudo validar la contraseña de root después de $max_attempts intentos"
+  return 1
+}
+
+validate_zabbix_db_user() {
+  local password="$1"
+  local max_attempts=3
+  local attempt=1
+
+  log_step "Validando usuario zabbix en la base de datos..."
+
+  # Esperar un momento para que los permisos se apliquen
+  sleep 2
+
+  while [ $attempt -le $max_attempts ]; do
+    if mysql -uzabbix --password="${password}" -h ${DB_HOST_TYPE} -e "SELECT 1" zabbix >/dev/null 2>&1; then
+      log_info "✓ Usuario zabbix válido y con acceso a la base de datos"
+      return 0
+    else
+      log_warn "✗ Usuario zabbix no puede conectar (intento $attempt de $max_attempts)"
+
+      # Re-grantear permisos por si acaso
+      mysql --defaults-file=/root/.my.cnf <<EOF
+GRANT ALL PRIVILEGES ON zabbix.* TO 'zabbix'@'${DB_HOST_TYPE}';
+FLUSH PRIVILEGES;
+EOF
+      sleep 2
+      ((attempt++))
+    fi
+  done
+
+  log_error "No se pudo validar el usuario zabbix después de $max_attempts intentos"
+  return 1
+}
+
+save_credentials_early() {
+  local db_pass="$1"
+  local root_pass="$2"
+  local server_ip=$(hostname -I | awk '{print $1}')
+
+  # Crear archivo temporal de credenciales
+  local temp_cred_file="/root/zabbix_credentials_temp.txt"
+
+  cat >"$temp_cred_file" <<EOF
+=============================================
+  ZABBIX CREDENCIALES (TEMPORAL)
+  Generado: $(date)
+=============================================
+
+🔐 BASE DE DATOS MYSQL:
+  Usuario root: root
+  Password root: ${root_pass}
+  
+  Usuario Zabbix DB: zabbix
+  Password Zabbix DB: ${db_pass}
+
+🔐 WEB ZABBIX (por defecto):
+  Usuario: Admin
+  Password: zabbix
+
+=============================================
+EOF
+  chmod 600 "$temp_cred_file"
+  log_info "Credenciales guardadas temporalmente en: $temp_cred_file"
 }
 
 kill_zabbix_processes() {
@@ -211,7 +313,7 @@ uninstall_zabbix() {
 
   log_info "Iniciando desinstalación forzada de Zabbix..."
 
-  # 1. FORZAR DETENCIÓN DE SERVICIOS (con kill si es necesario)
+  # 1. FORZAR DETENCIÓN DE SERVICIOS
   log_step "Deteniendo servicios de Zabbix..."
   kill_zabbix_processes
 
@@ -228,24 +330,18 @@ uninstall_zabbix() {
   rm -rf /etc/httpd/conf.d/zabbix.conf
   rm -f /etc/zabbix_server.conf
   rm -f /etc/zabbix_agentd.conf
-  rm -f /etc/zabbix/zabbix_server.conf
-  rm -f /etc/zabbix/zabbix_agentd.conf
 
   # 4. Preguntar por base de datos
-  if command -v mysql &>/dev/null; then
+  if command -v mysql &>/dev/null && [ -f /root/.my.cnf ]; then
     echo -e "\n${YELLOW}¿Desea eliminar también la base de datos 'zabbix'? (s/N): ${NC}"
     read -r confirm_db
     if [[ "$confirm_db" =~ ^[Ss]$ ]]; then
       log_step "Eliminando base de datos..."
-      if [ -f /root/.my.cnf ]; then
-        mysql --defaults-file=/root/.my.cnf -e "DROP DATABASE IF EXISTS zabbix;" 2>/dev/null
-        mysql --defaults-file=/root/.my.cnf -e "DROP USER IF EXISTS 'zabbix'@'localhost';" 2>/dev/null
-        mysql --defaults-file=/root/.my.cnf -e "DROP USER IF EXISTS 'zabbix'@'127.0.0.1';" 2>/dev/null
-        mysql --defaults-file=/root/.my.cnf -e "FLUSH PRIVILEGES;" 2>/dev/null
-        log_info "Base de datos y usuario eliminados"
-      else
-        log_warn "No se pudo conectar a MySQL. Base de datos NO eliminada."
-      fi
+      mysql --defaults-file=/root/.my.cnf -e "DROP DATABASE IF EXISTS zabbix;" 2>/dev/null
+      mysql --defaults-file=/root/.my.cnf -e "DROP USER IF EXISTS 'zabbix'@'localhost';" 2>/dev/null
+      mysql --defaults-file=/root/.my.cnf -e "DROP USER IF EXISTS 'zabbix'@'127.0.0.1';" 2>/dev/null
+      mysql --defaults-file=/root/.my.cnf -e "FLUSH PRIVILEGES;" 2>/dev/null
+      log_info "Base de datos y usuario eliminados"
     else
       log_info "Manteniendo base de datos zabbix"
     fi
@@ -294,6 +390,7 @@ check_mysql_installed() {
       MYSQL_HAS_ROOT_PASSWORD=true
       echo -e "${YELLOW}Ingrese la password actual de root de MySQL:${NC}"
       read -r -s OLD_MYSQL_ROOT_PASSWORD
+      echo ""
     fi
   else
     MYSQL_ALREADY_INSTALLED=false
@@ -467,23 +564,46 @@ setup_passwords() {
 
   if [ "$AUTO_MODE" = true ]; then
     DB_PASSWORD="$random_db_pass"
-    MYSQL_ROOT_PASSWORD="$random_mysql_root_pass"
+
+    if [ "$MYSQL_ALREADY_INSTALLED" = true ] && [ "$MYSQL_HAS_ROOT_PASSWORD" = true ]; then
+      # Si MySQL ya tiene password, no la cambiamos
+      log_info "Usando password existente de MySQL"
+    else
+      MYSQL_ROOT_PASSWORD="$random_mysql_root_pass"
+    fi
     log_info "Passwords generadas automaticamente"
+
+    # Guardar credenciales
+    save_credentials_early "$DB_PASSWORD" "$MYSQL_ROOT_PASSWORD"
   else
     echo -e "\n${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}  CONFIGURACION DE PASSWORDS${NC}"
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    # Solo pedir password de MySQL si ya existe una instalacion previa con password
-    if [ "$MYSQL_ALREADY_INSTALLED" = true ] && [ "$MYSQL_HAS_ROOT_PASSWORD" = true ] && [ -z "$MYSQL_ROOT_PASSWORD" ]; then
-      echo -e "${YELLOW}MySQL ya tiene password configurada. Se mantendra la existente.${NC}"
+    # Configurar password de root de MySQL
+    if [ "$MYSQL_ALREADY_INSTALLED" = true ] && [ "$MYSQL_HAS_ROOT_PASSWORD" = true ]; then
+      echo -e "${YELLOW}MySQL ya tiene una contraseña de root configurada.${NC}"
+      echo -e "${YELLOW}Por favor ingrese la contraseña actual de root:${NC}"
+      read -r -s MYSQL_ROOT_PASSWORD
+      echo ""
+
+      # Validar la contraseña ingresada
+      if ! validate_mysql_root_password "$MYSQL_ROOT_PASSWORD"; then
+        log_error "No se pudo validar la contraseña de root"
+        exit 1
+      fi
     else
+      # MySQL no tiene contraseña o es nueva instalación
       confirm_password "Password para usuario root de MySQL" "$random_mysql_root_pass" "MYSQL_ROOT_PASSWORD"
     fi
 
+    # Configurar password de usuario zabbix
     confirm_password "Password para usuario Zabbix en MySQL" "$random_db_pass" "DB_PASSWORD"
 
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+
+    # Guardar credenciales
+    save_credentials_early "$DB_PASSWORD" "$MYSQL_ROOT_PASSWORD"
   fi
 }
 
@@ -520,7 +640,19 @@ create_database() {
   # Determinar conexion optima
   determine_db_connection
 
-  # Crear usuario y base de datos usando root con archivo .my.cnf
+  log_info "Usando DB_HOST_TYPE: ${DB_HOST_TYPE}"
+
+  # Verificar que podemos conectar como root ANTES de crear nada
+  if ! mysql --defaults-file=/root/.my.cnf -e "SELECT 1" >/dev/null 2>&1; then
+    log_error "No se puede conectar a MySQL como root"
+    log_error "Verifique que MySQL esté corriendo y que /root/.my.cnf tenga la contraseña correcta"
+    exit 1
+  fi
+
+  log_info "Conexión root verificada"
+
+  # Crear base de datos y usuario
+  log_info "Creando base de datos y usuario zabbix..."
   mysql --defaults-file=/root/.my.cnf <<EOF
 create database if not exists zabbix character set utf8mb4 collate utf8mb4_bin;
 create user if not exists zabbix@${DB_HOST_TYPE} identified by '${DB_PASSWORD}';
@@ -536,25 +668,41 @@ EOF
 
   log_info "Base de datos y usuario creados"
 
-  log_step "Importando esquema inicial..."
-
-  # Forma correcta: usar --password=VALOR (sin espacios) o -pVALOR
-  # También podemos usar el archivo .my.cnf para el usuario zabbix
-  if zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix --password="${DB_PASSWORD}" -h ${DB_HOST_TYPE} zabbix >>"$LOG_FILE" 2>&1; then
-    log_info "Esquema de base de datos importado correctamente"
-  else
-    log_error "Error al importar el esquema. Verificando..."
-
-    # Intentar de nuevo con método alternativo
-    log_warn "Reintentando con método alternativo..."
-    zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -p"${DB_PASSWORD}" -h ${DB_HOST_TYPE} zabbix >>"$LOG_FILE" 2>&1
-
-    if [ $? -ne 0 ]; then
-      log_error "No se pudo importar el esquema. Verifique la contraseña."
-      log_error "Password de DB: ${DB_PASSWORD}"
-      exit 1
-    fi
+  # Validar que el usuario zabbix funciona
+  if ! validate_zabbix_db_user "$DB_PASSWORD"; then
+    log_error "El usuario zabbix no puede conectar a la base de datos"
+    exit 1
   fi
+
+  # Importar esquema
+  log_step "Importando esquema inicial (puede tomar varios minutos)..."
+
+  local schema_file="/usr/share/zabbix/sql-scripts/mysql/server.sql.gz"
+  if [ ! -f "$schema_file" ]; then
+    log_error "Archivo de esquema no encontrado: $schema_file"
+    exit 1
+  fi
+
+  # Intentar importar con reintentos
+  local max_retries=2
+  local retry=0
+
+  while [ $retry -lt $max_retries ]; do
+    if zcat "$schema_file" | mysql --default-character-set=utf8mb4 -uzabbix --password="${DB_PASSWORD}" -h ${DB_HOST_TYPE} zabbix >>"$LOG_FILE" 2>&1; then
+      log_info "Esquema importado correctamente"
+      break
+    else
+      ((retry++))
+      if [ $retry -lt $max_retries ]; then
+        log_warn "Error al importar, reintentando (intento $retry de $max_retries)..."
+        sleep 3
+      else
+        log_error "Error al importar el esquema después de $max_retries intentos"
+        log_error "Revise el log para más detalles: $LOG_FILE"
+        exit 1
+      fi
+    fi
+  done
 
   # Desactivar log_bin_trust_function_creators
   mysql --defaults-file=/root/.my.cnf <<EOF
@@ -562,7 +710,16 @@ set global log_bin_trust_function_creators = 0;
 flush privileges;
 EOF
 
-  log_info "Esquema de base de datos importado"
+  # Verificar que las tablas se crearon
+  local table_count=$(mysql -uzabbix --password="${DB_PASSWORD}" -h ${DB_HOST_TYPE} -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='zabbix'" -N 2>/dev/null)
+  if [ -n "$table_count" ] && [ "$table_count" -gt 0 ]; then
+    log_info "✓ Verificación exitosa: $table_count tablas creadas"
+  else
+    log_error "✗ No se encontraron tablas en la base de datos zabbix"
+    exit 1
+  fi
+
+  log_info "Base de datos lista para usar"
 }
 
 configure_server() {
@@ -592,7 +749,7 @@ configure_server() {
 configure_web() {
   log_step "Configurando interfaz web de Zabbix..."
 
-  # Crear archivo de configuracion web si no existe
+  # Crear archivo de configuracion web
   local WEB_CONFIG="/etc/zabbix/web/zabbix.conf.php"
 
   mkdir -p /etc/zabbix/web
@@ -795,7 +952,7 @@ tail -f /var/log/mariadb/slow-queries.log
 
 # Conectar a MySQL
 mysql --defaults-file=/root/.my.cnf
-mysql -uzabbix -p'${DB_PASSWORD}' -h ${DB_HOST_TYPE} zabbix
+mysql -uzabbix --password='${DB_PASSWORD}' -h ${DB_HOST_TYPE} zabbix
 
 # Verificar locales
 locale -a | grep -E "en_US|es_ES|es_CL"
@@ -823,6 +980,10 @@ mysql --defaults-file=/root/.my.cnf -e "SHOW ENGINE INNODB STATUS\G"
 EOF
 
   chmod 600 "$CREDENTIALS_FILE"
+
+  # Eliminar archivo temporal
+  rm -f /root/zabbix_credentials_temp.txt
+
   log_info "Archivo de credenciales creado: $CREDENTIALS_FILE"
 }
 
@@ -978,7 +1139,7 @@ if [ "$AGENT_ONLY" = false ]; then
   setup_passwords
 fi
 
-if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ]; then
+if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ] && [ "$REINSTALL" = false ]; then
   echo -e "${YELLOW}Este script instalara Zabbix Server 7.4 con:${NC}"
   echo -e "  • MariaDB con hardening y tuning (buffer_pool: 2-4GB, max_connections: 500)"
   echo -e "  • Apache Web Server"
