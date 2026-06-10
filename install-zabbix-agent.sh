@@ -136,24 +136,28 @@ detect_os() {
 
   # Detectar versión de AlmaLinux específicamente
   if [ -f /etc/almalinux-release ]; then
-    ALMA_VERSION=$(rpm -q --qf "%{VERSION}" almalinux-release | cut -d. -f1)
-    log_debug "AlmaLinux versión: $ALMA_VERSION"
+    OS_FAMILY="almalinux"
+    ALMA_VERSION=$(grep -oE '[0-9]+' /etc/almalinux-release | head -1)
+  elif [ -f /etc/redhat-release ]; then
+    OS_FAMILY="rhel"
+    ALMA_VERSION=$(grep -oE '[0-9]+' /etc/redhat-release | head -1)
   else
-    ALMA_VERSION=$VER
+    case $OS in
+    centos | rhel | almalinux | rocky | fedora | amzn | ol) OS_FAMILY="rhel" ;;
+    debian | ubuntu | raspbian | linuxmint) OS_FAMILY="debian" ;;
+    suse | opensuse | sles) OS_FAMILY="suse" ;;
+    *) OS_FAMILY="unknown" ;;
+    esac
+    ALMA_VERSION=$(echo $VER | cut -d. -f1)
   fi
 
-  case $OS in
-  centos | rhel | almalinux | rocky | fedora | amzn | ol) OS_FAMILY="rhel" ;;
-  debian | ubuntu | raspbian | linuxmint) OS_FAMILY="debian" ;;
-  suse | opensuse | sles) OS_FAMILY="suse" ;;
-  *) OS_FAMILY="unknown" ;;
-  esac
+  log_debug "OS Family: $OS_FAMILY, Version: $ALMA_VERSION"
 }
 
 install_dependencies() {
   log_step "Instalando dependencias..."
   case $OS_FAMILY in
-  rhel) dnf install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1 ;;
+  rhel | almalinux) dnf install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1 ;;
   debian) apt-get update -qq && apt-get install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1 ;;
   suse) zypper install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1 ;;
   esac
@@ -173,36 +177,27 @@ disable_epel_conflict() {
   fi
 }
 
-get_alma_version() {
-  if [ -f /etc/almalinux-release ]; then
-    ALMA_VERSION=$(rpm -q --qf "%{VERSION}" almalinux-release | cut -d. -f1)
-  else
-    ALMA_VERSION=$(echo $VER | cut -d. -f1)
-  fi
-  echo $ALMA_VERSION
-}
-
 install_zabbix_repo() {
   log_step "Configurando repositorio Zabbix 7.4..."
 
   # Limpiar repositorios viejos
   rm -f /etc/yum.repos.d/zabbix.repo
+  dnf remove -y zabbix-release >>/tmp/zabbix_agent_install.log 2>&1
 
   case $OS_FAMILY in
-  rhel)
-    local ALMA_VER=$(get_alma_version)
-    log_debug "Versión detectada: $ALMA_VER"
-
-    # Verificar que la versión es soportada
-    if [[ ! "$ALMA_VER" =~ ^(8|9|10)$ ]]; then
-      log_error "Versión $ALMA_VER no soportada. Usando fallback a binario."
+  rhel | almalinux)
+    # Validar que la versión es soportada (8, 9, 10)
+    if [[ ! "$ALMA_VERSION" =~ ^(8|9|10)$ ]]; then
+      log_error "Versión $ALMA_VERSION no soportada. Versiones soportadas: 8, 9, 10"
+      log_info "Intentando método alternativo: binario estático..."
       install_agent_from_binary
       return $?
     fi
 
     # URL CORRECTA según documentación oficial de Zabbix
-    local REPO_URL="https://repo.zabbix.com/zabbix/7.4/release/alma/${ALMA_VER}/noarch/zabbix-release-latest-7.4.el${ALMA_VER}.noarch.rpm"
+    local REPO_URL="https://repo.zabbix.com/zabbix/7.4/release/alma/${ALMA_VERSION}/noarch/zabbix-release-latest-7.4.el${ALMA_VERSION}.noarch.rpm"
     log_info "Repositorio: $REPO_URL"
+    log_debug "URL: $REPO_URL"
 
     rpm -Uvh "$REPO_URL" >>/tmp/zabbix_agent_install.log 2>&1
 
@@ -235,13 +230,22 @@ install_zabbix_repo() {
       esac
       ;;
     esac
-    wget -q "https://repo.zabbix.com/zabbix/7.4/ubuntu/pool/main/z/zabbix-release/zabbix-release_latest_7.4+${DEB_VERSION}_all.deb" -O /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
+    local REPO_URL="https://repo.zabbix.com/zabbix/7.4/ubuntu/pool/main/z/zabbix-release/zabbix-release_latest_7.4+${DEB_VERSION}_all.deb"
+    wget -q "$REPO_URL" -O /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
     dpkg -i /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
     apt-get update -qq >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   esac
 
-  log_info "Repositorio Zabbix 7.4 configurado"
+  # Verificar que el repositorio se instaló correctamente
+  if [ ! -f /etc/yum.repos.d/zabbix.repo ] && [ "$OS_FAMILY" != "debian" ]; then
+    log_error "No se pudo instalar el repositorio Zabbix"
+    log_info "Intentando método alternativo: binario estático..."
+    install_agent_from_binary
+    return $?
+  fi
+
+  log_info "Repositorio Zabbix 7.4 configurado correctamente"
 }
 
 install_agent_from_binary() {
@@ -299,20 +303,6 @@ EOF
   AGENT_TYPE="zabbix_agentd"
   AGENT_SERVICE="zabbix-agent"
 
-  # Crear archivo de configuración básico
-  cat >/etc/zabbix/zabbix_agentd.conf <<'EOF'
-Server=127.0.0.1
-ServerActive=127.0.0.1
-Hostname=Zabbix server
-ListenPort=10050
-ListenIP=0.0.0.0
-StartAgents=3
-LogFile=/var/log/zabbix/zabbix_agentd.log
-LogFileSize=10
-DebugLevel=3
-Timeout=30
-EOF
-
   log_info "Zabbix Agent instalado desde binario estático"
   return 0
 }
@@ -322,7 +312,7 @@ install_agent() {
 
   # Si ya se instaló desde binario, salir
   if command -v zabbix_agentd &>/dev/null; then
-    AGENT_VERSION=$(zabbix_agentd --version | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
+    AGENT_VERSION=$(zabbix_agentd --version 2>/dev/null | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
     log_info "Zabbix Agent ya instalado: $AGENT_VERSION"
     AGENT_TYPE="zabbix_agentd"
     AGENT_SERVICE="zabbix-agent"
@@ -330,7 +320,7 @@ install_agent() {
   fi
 
   case $OS_FAMILY in
-  rhel)
+  rhel | almalinux)
     # Intentar instalar desde repositorio
     dnf install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
     ;;
@@ -345,7 +335,11 @@ install_agent() {
   # Verificar instalación
   if command -v zabbix_agentd &>/dev/null; then
     AGENT_VERSION=$(zabbix_agentd --version | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
-    log_info "Zabbix Agent $AGENT_VERSION instalado"
+    if [[ "$AGENT_VERSION" == 7.4* ]]; then
+      log_info "Zabbix Agent $AGENT_VERSION instalado desde repositorio"
+    else
+      log_warn "Se instaló versión $AGENT_VERSION, no es 7.4"
+    fi
     AGENT_TYPE="zabbix_agentd"
     AGENT_SERVICE="zabbix-agent"
   else
@@ -372,6 +366,11 @@ generate_psk() {
 configure_agent() {
   log_step "Configurando Zabbix Agent..."
 
+  # Si no existe el archivo de configuración (instalación desde binario), crearlo
+  if [ ! -f /etc/zabbix/zabbix_agentd.conf ]; then
+    touch /etc/zabbix/zabbix_agentd.conf
+  fi
+
   cat >/etc/zabbix/zabbix_agentd.conf <<EOF
 Server=${ZABBIX_SERVER}
 ServerActive=${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
@@ -391,8 +390,8 @@ TLSPSKIdentity=${PSK_IDENTITY}
 TLSPSKFile=/etc/zabbix/ssl/psk.key
 EOF
 
-  chown root:zabbix /etc/zabbix/zabbix_agentd.conf
-  chmod 640 /etc/zabbix/zabbix_agentd.conf
+  chown root:zabbix /etc/zabbix/zabbix_agentd.conf 2>/dev/null || true
+  chmod 640 /etc/zabbix/zabbix_agentd.conf 2>/dev/null || true
   log_info "Agente configurado con TLS/PSK"
 }
 
@@ -416,7 +415,8 @@ test_api_connection() {
   local RESPONSE=$(curl -s -k -X POST -H "Content-Type: application/json-rpc" -d "$JSON_PAYLOAD" "${ZABBIX_API_URL}")
 
   if echo "$RESPONSE" | grep -q '"result"'; then
-    log_info "API accesible"
+    local API_VERSION=$(echo "$RESPONSE" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
+    log_info "API accesible (versión: $API_VERSION)"
     return 0
   else
     log_error "No se pudo conectar a la API: $ZABBIX_API_URL"
@@ -462,7 +462,12 @@ EOF
     "${ZABBIX_API_URL}")
 
   if echo "$RESPONSE" | grep -q '"hostids"'; then
-    log_info "Host '${HOSTNAME}' registrado con TLS/PSK"
+    local HOST_ID=$(echo "$RESPONSE" | grep -o '"hostids":\["[0-9]*"' | grep -o '[0-9]*')
+    log_info "Host '${HOSTNAME}' registrado exitosamente (ID: ${HOST_ID})"
+    log_info "TLS/PSK habilitado"
+  elif echo "$RESPONSE" | grep -q "already exists"; then
+    log_warn "El host '${HOSTNAME}' ya existe en Zabbix"
+    log_info "Puedes eliminarlo manualmente y volver a ejecutar el script"
   else
     log_error "Error al registrar host: $RESPONSE"
     exit 1
@@ -482,11 +487,19 @@ start_agent() {
     systemctl restart "$AGENT_SERVICE" >>/tmp/zabbix_agent_install.log 2>&1
   fi
 
+  sleep 2
+
   if pgrep -f "zabbix_agentd" >/dev/null; then
     log_info "Agente iniciado correctamente"
   else
     log_error "Error al iniciar agente"
-    exit 1
+    # Intentar iniciar manualmente
+    /usr/sbin/zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf
+    if [ $? -eq 0 ]; then
+      log_info "Agente iniciado manualmente"
+    else
+      exit 1
+    fi
   fi
 }
 
@@ -509,6 +522,7 @@ Servidor: ${ZABBIX_SERVER}
 📋 Comandos útiles:
   systemctl status ${AGENT_SERVICE}
   tail -f /var/log/zabbix/zabbix_agentd.log
+  zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname
 
 =============================================
 EOF
@@ -598,11 +612,13 @@ elif [ "$MODE" = "lan" ]; then
   MODE_NAME="LAN"
   get_local_ip
   AGENT_IP="$LOCAL_IP"
+  log_info "Modo LAN: $ZABBIX_API_URL"
 elif [ "$MODE" = "wan" ]; then
   ZABBIX_API_URL="https://${ZABBIX_SERVER}/api_jsonrpc.php"
   MODE_NAME="WAN"
   get_public_ip
   AGENT_IP="$PUBLIC_IP"
+  log_info "Modo WAN: $ZABBIX_API_URL"
 else
   echo -e "${YELLOW}Seleccione modo: 1) LAN 2) WAN 3) URL personalizada${NC}"
   read -p "Opción: " mode_opt
@@ -634,6 +650,7 @@ else
 fi
 
 HOSTNAME=$(hostname -f 2>/dev/null || hostname)
+log_debug "Hostname final: $HOSTNAME"
 
 # Instalación
 detect_os
