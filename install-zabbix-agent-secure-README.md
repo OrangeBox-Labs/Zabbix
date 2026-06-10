@@ -13,7 +13,7 @@ Script de instalación automática de Zabbix Agent 2 con PSK única por agente y
 
 ## Descripción
 
-Este script instala y configura Zabbix Agent 2 en sistemas Linux con las máximas medidas de seguridad:
+Este script instala y configura Zabbix Agent 2 en sistemas Linux de manera segura.
 
 - PSK única y diferente para cada agente
 - TLS obligatorio para todas las comunicaciones
@@ -33,6 +33,31 @@ Este script instala y configura Zabbix Agent 2 en sistemas Linux con las máxima
 | Backup de credenciales | Guarda PSK y configuración en archivo seguro |
 | DNS unificado | Usa monitoreo.orangebox.cl para resolver interno/externo |
 
+## Modo Interactivo vs Automático
+
+El script soporta dos modos de ejecución:
+
+| Modo | Característica | Uso |
+|------|----------------|-----|
+| Interactivo | Pregunta los datos necesarios durante la ejecución | Ejecutar sin variables predefinidas |
+| Automático | Usa valores predefinidos sin preguntar | Definir variables al inicio del script |
+
+## Variables Configurables
+
+| Variable | Descripción | Ejemplo |
+|----------|-------------|---------|
+| ZABBIX_SERVER | Servidor Zabbix (FQDN o IP) | monitoreo.orangebox.cl |
+| ZABBIX_SERVER_PORT | Puerto del servidor Zabbix | 10051 |
+| ZABBIX_API_URL | URL de la API de Zabbix | https://monitoreo.orangebox.cl/api_jsonrpc.php |
+| ZABBIX_ADMIN_USER | Usuario administrador de Zabbix | Admin |
+| ZABBIX_ADMIN_PASS | Password del usuario administrador | (se solicita si está vacía) |
+
+## Comportamiento
+
+Si una variable está predefinida en el script, se usa automáticamente. Si está vacía, el script solicita el valor durante la ejecución.
+
+La URL de la API se genera automáticamente a partir de ZABBIX_SERVER si no se define manualmente.
+
 ## Requisitos
 
 | Requisito | Detalle |
@@ -44,24 +69,11 @@ Este script instala y configura Zabbix Agent 2 en sistemas Linux con las máxima
 | Acceso a Zabbix Server | Puerto 10051/TCP abierto hacia monitoreo.orangebox.cl |
 | Zabbix Server | Versión 7.4 con API accesible |
 
-## Instalación Rápida
-
-En la máquina a monitorear (como root):
-
+## Instalación
 ```
+git clone https://github.com/OrangeBox-Labs/Zabbix.git
+cd Zabbix
 chmod +x install-zabbix-agent-secure.sh
-./install-zabbix-agent-secure.sh
-```
-
-## Variables a Configurar
-
-Dentro del script, modificar estas líneas:
-(reemplaza por la IP o el nombre de tu servidor Zabbix
-```
-ZABBIX_SERVER="monitoreo.orangebox.cl"
-ZABBIX_SERVER_PORT="10051"
-ZABBIX_ADMIN_USER="Admin"
-ZABBIX_ADMIN_PASS="zabbix"
 ```
 
 ## Que hace el script
@@ -69,14 +81,15 @@ ZABBIX_ADMIN_PASS="zabbix"
 | Paso | Acción |
 |------|--------|
 | 1 | Detecta el sistema operativo y versión |
-| 2 | Genera una PSK única de 32 bytes hex para el agente |
-| 3 | Instala el repositorio de Zabbix |
-| 4 | Instala Zabbix Agent 2 |
-| 5 | Configura el agente con TLS PSK obligatorio |
-| 6 | Inicia y habilita el servicio |
-| 7 | Se autentica en la API de Zabbix |
-| 8 | Crea el host con la configuración PSK |
-| 9 | Guarda las credenciales en un archivo seguro |
+| 2 | Solicita configuración si no está predefinida |
+| 3 | Genera una PSK única de 32 bytes hex para el agente |
+| 4 | Instala el repositorio de Zabbix |
+| 5 | Instala Zabbix Agent 2 |
+| 6 | Configura el agente con TLS PSK obligatorio |
+| 7 | Inicia y habilita el servicio |
+| 8 | Se autentica en la API de Zabbix |
+| 9 | Crea el host con la configuración PSK |
+| 10 | Guarda las credenciales en un archivo seguro |
 
 ## Archivos Generados
 
@@ -104,10 +117,7 @@ tail -f /var/log/zabbix/zabbix_agent2.log
 Probar conexión desde otro servidor:
 
 ```
-zabbix_get -s IP_DEL_AGENTE -p 10050 -k "agent.ping" \
-    --tls-connect psk \
-    --tls-psk-identity "PSK_IDENTITY" \
-    --tls-psk-file /etc/zabbix/zabbix_agentd.psk
+zabbix_get -s IP_DEL_AGENTE -p 10050 -k "agent.ping" --tls-connect psk --tls-psk-identity "PSK_IDENTITY" --tls-psk-file /etc/zabbix/zabbix_agentd.psk
 ```
 
 ## Solución de Problemas
@@ -123,7 +133,7 @@ Error: No se pudo autenticar en Zabbix API
 
 Verificar que el usuario y password de Admin son correctos:
 ```
-curl -k https://monitoreo.orangebox.cl/zabbix/api_jsonrpc.php
+curl -k https://monitoreo.orangebox.cl/api_jsonrpc.php
 ```
 
 Error: El agente no inicia
@@ -150,7 +160,7 @@ Este script implementa las siguientes medidas de seguridad:
 
 MIT License
 
-Copyright (c) 2026 Felipe Roman - OrangeBox
+Copyright (c) 2026 Felipe Roman - OrangeBox Labs
 
 ---
 **🤝 ¿Conoces una PyME que necesite hardening o auditoría?**  
