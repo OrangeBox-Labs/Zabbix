@@ -7,6 +7,7 @@
 # Email: froman@orangebox.cl
 # Descripcion: Instalacion de Zabbix Server 7.4 en AlmaLinux 10
 #              con MySQL/MariaDB, Apache y SELinux
+#              Genera passwords aleatorios y crea archivo de credenciales
 # ==============================================
 
 RED='\033[0;31m'
@@ -17,10 +18,16 @@ NC='\033[0m'
 
 # Variables configurables
 ZABBIX_VERSION="7.4"
-DB_PASSWORD="Zabbix123!"
-ZBX_PASSWORD="Zabbix123!"
-MYSQL_ROOT_PASSWORD=""
 INSTALL_TYPE="server" # server o agent
+
+# Archivo de credenciales
+CREDENTIALS_FILE="/root/zabbix_credentials_$(date +%Y%m%d_%H%M%S).txt"
+LOG_FILE="/root/zabbix_install_$(date +%Y%m%d_%H%M%S).log"
+
+# Variables que se llenaran durante la ejecucion
+DB_PASSWORD=""
+ZBX_PASSWORD=""
+MYSQL_ROOT_PASSWORD=""
 
 # ==============================================
 # FUNCIONES
@@ -29,18 +36,16 @@ INSTALL_TYPE="server" # server o agent
 show_usage() {
   echo -e "${GREEN}USO:${NC}"
   echo "  $0                                    - Instalacion interactiva"
-  echo "  $0 --auto                             - Instalacion automatica (con passwords por defecto)"
+  echo "  $0 --auto                             - Instalacion automatica (genera passwords aleatorios)"
   echo "  $0 --agent                            - Instalar solo Zabbix Agent"
-  echo "  $0 --db-password <pass>               - Password para usuario zabbix en DB"
-  echo "  $0 --mysql-root-password <pass>       - Password para root de MySQL"
   echo "  $0 --help                             - Mostrar esta ayuda"
   echo ""
   echo -e "${GREEN}EJEMPLOS:${NC}"
   echo "  # Instalacion interactiva"
   echo "  ./install-zabbix-server.sh"
   echo ""
-  echo "  # Instalacion automatica con passwords personalizados"
-  echo "  ./install-zabbix-server.sh --auto --db-password MiPass123 --mysql-root-password RootPass456"
+  echo "  # Instalacion automatica con passwords aleatorios"
+  echo "  ./install-zabbix-server.sh --auto"
   echo ""
   echo "  # Instalar solo el agente"
   echo "  ./install-zabbix-server.sh --agent"
@@ -48,19 +53,53 @@ show_usage() {
 }
 
 log_info() {
-  echo -e "${GREEN}[✓]${NC} $1"
+  echo -e "${GREEN}[✓]${NC} $1" | tee -a "$LOG_FILE"
 }
 
 log_error() {
-  echo -e "${RED}[✗]${NC} $1"
+  echo -e "${RED}[✗]${NC} $1" | tee -a "$LOG_FILE"
 }
 
 log_warn() {
-  echo -e "${YELLOW}[!]${NC} $1"
+  echo -e "${YELLOW}[!]${NC} $1" | tee -a "$LOG_FILE"
 }
 
 log_step() {
-  echo -e "\n${BLUE}[*]${NC} $1"
+  echo -e "\n${BLUE}[*]${NC} $1" | tee -a "$LOG_FILE"
+}
+
+generate_password() {
+  local length=${1:-20}
+  tr -dc 'A-Za-z0-9!?@#%$&*' </dev/urandom 2>/dev/null | head -c "$length"
+}
+
+confirm_password() {
+  local desc="$1"
+  local generated="$2"
+  local var_name="$3"
+  local user_input=""
+
+  echo -e "\n${YELLOW}${desc}:${NC}"
+  echo -e "  Password generada: ${GREEN}${generated}${NC}"
+  echo -e "${YELLOW}¿Desea usar esta password? (s/N para cambiarla): ${NC}"
+  read -r confirm
+
+  if [[ "$confirm" =~ ^[Ss]$ ]]; then
+    eval "$var_name='$generated'"
+    echo -e "${GREEN}  ✓ Usando password generada${NC}"
+  else
+    echo -e "${YELLOW}  Ingrese la nueva password:${NC}"
+    read -r -s user_input
+    echo -e "${YELLOW}  Confirme la password:${NC}"
+    read -r -s user_input2
+    if [ "$user_input" = "$user_input2" ] && [ -n "$user_input" ]; then
+      eval "$var_name='$user_input'"
+      echo -e "${GREEN}  ✓ Password personalizada configurada${NC}"
+    else
+      echo -e "${RED}  ✗ Las passwords no coinciden o estan vacias. Usando generada.${NC}"
+      eval "$var_name='$generated'"
+    fi
+  fi
 }
 
 check_root() {
@@ -87,22 +126,59 @@ detect_os() {
   fi
 }
 
+init_log() {
+  echo "==============================================" >"$LOG_FILE"
+  echo "Instalacion de Zabbix Server - $(date)" >>"$LOG_FILE"
+  echo "==============================================" >>"$LOG_FILE"
+  echo "" >>"$LOG_FILE"
+  log_info "Log de instalacion: $LOG_FILE"
+}
+
+setup_passwords() {
+  log_step "Configurando passwords..."
+
+  # Generar passwords aleatorias
+  local random_db_pass=$(generate_password 24)
+  local random_mysql_root_pass=$(generate_password 24)
+
+  if [ "$AUTO_MODE" = true ]; then
+    DB_PASSWORD="$random_db_pass"
+    MYSQL_ROOT_PASSWORD="$random_mysql_root_pass"
+    log_info "Passwords generadas automaticamente"
+  else
+    echo -e "\n${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}  CONFIGURACION DE PASSWORDS${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    confirm_password "Password para usuario Zabbix en MySQL" "$random_db_pass" "DB_PASSWORD"
+    confirm_password "Password para usuario root de MySQL" "$random_mysql_root_pass" "MYSQL_ROOT_PASSWORD"
+
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+  fi
+}
+
 install_mariadb() {
   log_step "Instalando MariaDB..."
-  dnf install mariadb-server mariadb -y
-  systemctl enable --now mariadb
+  dnf install mariadb-server mariadb -y >>"$LOG_FILE" 2>&1
+  systemctl enable --now mariadb >>"$LOG_FILE" 2>&1
   log_info "MariaDB instalado y en ejecucion"
 }
 
 secure_mariadb() {
-  if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-    log_step "Configurando password de root de MariaDB..."
-    mysqladmin -u root password "$MYSQL_ROOT_PASSWORD"
-    log_info "Password de root configurado"
-  else
-    log_step "Configuracion segura de MariaDB..."
-    mysql_secure_installation
-  fi
+  log_step "Configurando password de root de MariaDB..."
+
+  # Configurar password de root
+  mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1
+
+  # Crear archivo de configuracion para mysql client
+  cat >/root/.my.cnf <<EOF
+[client]
+user=root
+password=${MYSQL_ROOT_PASSWORD}
+EOF
+  chmod 600 /root/.my.cnf
+
+  log_info "Password de root de MariaDB configurado"
 }
 
 configure_repository() {
@@ -117,33 +193,27 @@ configure_repository() {
   fi
 
   # Instalar repositorio de Zabbix
-  rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm
-  dnf clean all
+  rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm >>"$LOG_FILE" 2>&1
+  dnf clean all >>"$LOG_FILE" 2>&1
   log_info "Repositorio de Zabbix configurado"
 }
 
 install_server() {
   log_step "Instalando Zabbix Server, frontend y agente..."
-  dnf install -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent
+  dnf install -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent >>"$LOG_FILE" 2>&1
   log_info "Paquetes de Zabbix instalados"
 }
 
 install_agent_only() {
   log_step "Instalando solo Zabbix Agent..."
-  dnf install -y zabbix-agent
+  dnf install -y zabbix-agent >>"$LOG_FILE" 2>&1
   log_info "Zabbix Agent instalado"
 }
 
 create_database() {
   log_step "Creando base de datos para Zabbix..."
 
-  if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-    MYSQL_CMD="mysql -uroot -p${MYSQL_ROOT_PASSWORD}"
-  else
-    MYSQL_CMD="mysql -uroot"
-  fi
-
-  $MYSQL_CMD <<EOF
+  mysql --defaults-file=/root/.my.cnf <<EOF
 create database if not exists zabbix character set utf8mb4 collate utf8mb4_bin;
 create user if not exists zabbix@localhost identified by '${DB_PASSWORD}';
 grant all privileges on zabbix.* to zabbix@localhost;
@@ -154,9 +224,9 @@ EOF
   log_info "Base de datos y usuario creados"
 
   log_step "Importando esquema inicial..."
-  zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -p${DB_PASSWORD} zabbix
+  zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -p${DB_PASSWORD} zabbix >>"$LOG_FILE" 2>&1
 
-  $MYSQL_CMD <<EOF
+  mysql --defaults-file=/root/.my.cnf <<EOF
 set global log_bin_trust_function_creators = 0;
 flush privileges;
 EOF
@@ -192,8 +262,8 @@ configure_agent() {
 start_services() {
   log_step "Iniciando servicios..."
 
-  systemctl restart zabbix-server zabbix-agent httpd php-fpm
-  systemctl enable zabbix-server zabbix-agent httpd php-fpm
+  systemctl restart zabbix-server zabbix-agent httpd php-fpm >>"$LOG_FILE" 2>&1
+  systemctl enable zabbix-server zabbix-agent httpd php-fpm >>"$LOG_FILE" 2>&1
 
   log_info "Servicios iniciados y habilitados"
 }
@@ -202,41 +272,93 @@ configure_firewall() {
   log_step "Configurando firewall..."
 
   if command -v firewall-cmd &>/dev/null; then
-    firewall-cmd --permanent --add-service=http
-    firewall-cmd --permanent --add-port=10050/tcp
-    firewall-cmd --reload
+    firewall-cmd --permanent --add-service=http >>"$LOG_FILE" 2>&1
+    firewall-cmd --permanent --add-port=10050/tcp >>"$LOG_FILE" 2>&1
+    firewall-cmd --reload >>"$LOG_FILE" 2>&1
     log_info "Firewall configurado"
   else
     log_warn "firewalld no instalado, omitiendo configuracion"
   fi
 }
 
+create_credentials_file() {
+  local server_ip=$(hostname -I | awk '{print $1}')
+
+  cat >"$CREDENTIALS_FILE" <<EOF
+=============================================
+  ZABBIX SERVER - CREDENCIALES DE ACCESO
+  Instalacion: $(date)
+  Servidor: $(hostname)
+  IP: ${server_ip}
+=============================================
+
+🔐 ACCESO WEB ZABBIX:
+  URL: http://${server_ip}/zabbix
+  Usuario: Admin
+  Password: zabbix
+
+🗄️ BASE DE DATOS MYSQL:
+  Usuario root: root
+  Password root: ${MYSQL_ROOT_PASSWORD}
+  
+  Usuario Zabbix DB: zabbix
+  Password Zabbix DB: ${DB_PASSWORD}
+  Base de datos: zabbix
+
+📁 ARCHIVOS DE CONFIGURACION:
+  Zabbix Server: /etc/zabbix/zabbix_server.conf
+  Zabbix Agent: /etc/zabbix/zabbix_agentd.conf
+  Apache: /etc/httpd/conf.d/zabbix.conf
+
+📋 LOGS:
+  Zabbix Server: /var/log/zabbix/zabbix_server.log
+  Zabbix Agent: /var/log/zabbix/zabbix_agentd.log
+  Instalacion: ${LOG_FILE}
+
+=============================================
+  COMANDOS UTILES
+=============================================
+
+# Estado de servicios
+systemctl status zabbix-server zabbix-agent httpd php-fpm
+
+# Ver logs
+tail -f /var/log/zabbix/zabbix_server.log
+tail -f /var/log/zabbix/zabbix_agentd.log
+
+# Conectar a MySQL
+mysql -uroot -p'${MYSQL_ROOT_PASSWORD}'
+mysql -uzabbix -p'${DB_PASSWORD}' zabbix
+
+=============================================
+  🌐 https://www.orangebox.cl
+=============================================
+EOF
+
+  chmod 600 "$CREDENTIALS_FILE"
+  log_info "Archivo de credenciales creado: $CREDENTIALS_FILE"
+}
+
 show_completion() {
   local server_ip=$(hostname -I | awk '{print $1}')
-  echo -e "\n${GREEN}============================================${NC}"
-  echo -e "${GREEN}  INSTALACION DE ZABBIX COMPLETADA${NC}"
-  echo -e "${GREEN}============================================${NC}"
-  echo -e "\n${YELLOW}URL DE ACCESO:${NC}"
-  echo -e "  http://${server_ip}/zabbix"
-  echo -e "\n${YELLOW}CREDENCIALES POR DEFECTO:${NC}"
-  echo -e "  Usuario: Admin"
-  echo -e "  Password: zabbix"
-  echo -e "\n${YELLOW}CONFIGURACION DE BASE DE DATOS:${NC}"
-  echo -e "  Usuario: zabbix"
-  echo -e "  Password: ${DB_PASSWORD}"
-  if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-    echo -e "  Root password: ${MYSQL_ROOT_PASSWORD}"
-  fi
-  echo -e "\n${YELLOW}COMANDOS UTILES:${NC}"
-  echo -e "  # Ver logs del servidor"
-  echo -e "  tail -f /var/log/zabbix/zabbix_server.log"
-  echo -e "  # Ver logs del agente"
-  echo -e "  tail -f /var/log/zabbix/zabbix_agentd.log"
-  echo -e "  # Estado de servicios"
-  echo -e "  systemctl status zabbix-server zabbix-agent httpd php-fpm"
-  echo -e "\n${GREEN}============================================${NC}"
-  echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}"
-  echo -e "${GREEN}============================================${NC}\n"
+
+  echo -e "\n${GREEN}============================================${NC}" | tee -a "$LOG_FILE"
+  echo -e "${GREEN}  INSTALACION DE ZABBIX COMPLETADA${NC}" | tee -a "$LOG_FILE"
+  echo -e "${GREEN}============================================${NC}" | tee -a "$LOG_FILE"
+  echo -e "\n${YELLOW}URL DE ACCESO:${NC}" | tee -a "$LOG_FILE"
+  echo -e "  http://${server_ip}/zabbix" | tee -a "$LOG_FILE"
+  echo -e "\n${YELLOW}CREDENCIALES POR DEFECTO:${NC}" | tee -a "$LOG_FILE"
+  echo -e "  Usuario: Admin" | tee -a "$LOG_FILE"
+  echo -e "  Password: zabbix" | tee -a "$LOG_FILE"
+  echo -e "\n${YELLOW}ARCHIVO DE CREDENCIALES:${NC}" | tee -a "$LOG_FILE"
+  echo -e "  ${CREDENTIALS_FILE}" | tee -a "$LOG_FILE"
+  echo -e "\n${YELLOW}LOG DE INSTALACION:${NC}" | tee -a "$LOG_FILE"
+  echo -e "  ${LOG_FILE}" | tee -a "$LOG_FILE"
+  echo -e "\n${RED}⚠️  IMPORTANTE: Guarde el archivo de credenciales en un lugar seguro${NC}" | tee -a "$LOG_FILE"
+  echo -e "${RED}   Luego elimine el archivo del servidor si no es necesario mantenerlo${NC}" | tee -a "$LOG_FILE"
+  echo -e "\n${GREEN}============================================${NC}" | tee -a "$LOG_FILE"
+  echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}" | tee -a "$LOG_FILE"
+  echo -e "${GREEN}============================================${NC}\n" | tee -a "$LOG_FILE"
 }
 
 # ==============================================
@@ -256,14 +378,6 @@ while [[ $# -gt 0 ]]; do
     AGENT_ONLY=true
     INSTALL_TYPE="agent"
     shift
-    ;;
-  --db-password)
-    DB_PASSWORD="$2"
-    shift 2
-    ;;
-  --mysql-root-password)
-    MYSQL_ROOT_PASSWORD="$2"
-    shift 2
     ;;
   --help | -h)
     show_usage
@@ -289,6 +403,11 @@ echo -e "${GREEN}============================================${NC}\n"
 
 check_root
 detect_os
+init_log
+
+if [ "$AGENT_ONLY" = false ]; then
+  setup_passwords
+fi
 
 if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ]; then
   echo -e "${YELLOW}Este script instalara Zabbix Server 7.4 con:${NC}"
@@ -298,8 +417,7 @@ if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ]; then
   echo -e "  • Zabbix Server"
   echo -e "  • Zabbix Agent"
   echo -e "  • SELinux Policy"
-  echo -e "\n${YELLOW}Password por defecto para DB: ${DB_PASSWORD}${NC}"
-  echo -e "${YELLOW}¿Desea continuar? (s/N): ${NC}"
+  echo -e "\n${YELLOW}¿Desea continuar? (s/N): ${NC}"
   read -r confirm
   if [[ ! "$confirm" =~ ^[Ss]$ ]]; then
     echo -e "${RED}Instalacion cancelada${NC}"
@@ -316,16 +434,11 @@ if [ "$AGENT_ONLY" = true ]; then
   configure_firewall
   echo -e "\n${GREEN}[✓] Zabbix Agent instalado correctamente${NC}"
   echo -e "Configuracion en: /etc/zabbix/zabbix_agentd.conf"
+  echo -e "Log de instalacion: $LOG_FILE"
 else
   # Instalacion completa
   install_mariadb
-
-  if [ -z "$MYSQL_ROOT_PASSWORD" ] && [ "$AUTO_MODE" = false ]; then
-    secure_mariadb
-  else
-    secure_mariadb
-  fi
-
+  secure_mariadb
   configure_repository
   install_server
   create_database
@@ -333,5 +446,6 @@ else
   configure_agent
   start_services
   configure_firewall
+  create_credentials_file
   show_completion
 fi
