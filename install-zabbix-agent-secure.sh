@@ -1,30 +1,43 @@
 #!/bin/bash
 # ==============================================
-# install-zabbix-agent-secure.sh
-# Script para instalar Zabbix Agent con PSK única
-# Registro automático vía API en monitoreo.orangebox.cl
-# Detecta automáticamente la versión de agente disponible
+# Script: install-zabbix-agent-secure.sh
+# Autor: Felipe Roman
+# Web: www.orangebox.cl
+# Email: froman@orangebox.cl
+# Descripcion: Instalacion de Zabbix Agent con PSK unica
+#              Registro automatico via API usando API Token
+#              Compatible con RHEL/AlmaLinux/Rocky 8/9/10
 # ==============================================
 
 # ==============================================
-# CONFIGURACIÓN (editar aquí o dejar para prompt)
+# CONFIGURACION (EDITAR AQUI)
 # ==============================================
-ZABBIX_SERVER="" #EJ: monitoreo.orangebox.cl
+ZABBIX_SERVER="monitoreo.orangebox.cl"
 ZABBIX_SERVER_PORT="10051"
-ZABBIX_API_URL=""    #Ej: https://monitoreo.orangebox.cl/api_jsonrpc.php
-ZABBIX_ADMIN_USER="" #EJ: Admin
-ZABBIX_ADMIN_PASS="" #Ej: La misma password que usas para loguearte en la web de tu zabbix
+ZABBIX_API_URL="https://${ZABBIX_SERVER}/api_jsonrpc.php"
+API_TOKEN="aea418dfd357074b808e151b5d23a47d14f8290642f0984101a75e3654355408"
+TEMPLATE_ID="10343" # Linux by Zabbix agent active
+GROUP_ID="2"        # Linux servers
 
-# Archivos
-LOG_FILE="/root/zabbix-agent-install.log"
-CRED_FILE=""
-
-# Colores
+# ==============================================
+# COLORES
+# ==============================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+
+# ==============================================
+# VARIABLES
+# ==============================================
+LOG_FILE="/root/zabbix-agent-install.log"
+HOSTNAME=$(hostname)
+HOST_IP=$(hostname -I | awk '{print $1}')
+PSK_IDENTITY="${HOSTNAME}_psk_$(date +%s)"
+PSK_KEY=$(openssl rand -hex 32)
+SERVICE_NAME=""
+CONFIG_FILE=""
 
 # ==============================================
 # FUNCIONES
@@ -37,230 +50,68 @@ log_error() {
   echo -e "${RED}[✗]${NC} $1" | tee -a "$LOG_FILE"
 }
 
-log_warn() {
-  echo -e "${YELLOW}[!]${NC} $1" | tee -a "$LOG_FILE"
-}
-
 log_step() {
   echo -e "\n${BLUE}[*]${NC} $1" | tee -a "$LOG_FILE"
 }
 
-prompt_variable() {
-  local var_name="$1"
-  local prompt_text="$2"
-  local current_value="$3"
-  local is_secret="$4"
-
-  if [ -n "$current_value" ]; then
-    return 0
-  fi
-
-  echo -e "${YELLOW}${prompt_text}${NC}"
-  if [ "$is_secret" = "true" ]; then
-    read -s -r value
-    echo
+detect_os() {
+  if [ -f /etc/redhat-release ]; then
+    OS_FAMILY="rhel"
+    OS_VERSION=$(rpm -q --qf "%{VERSION}" $(rpm -q --whatprovides redhat-release) 2>/dev/null | cut -d: -f1 | cut -d. -f1)
+    log "Sistema RHEL/AlmaLinux/Rocky detectado (version $OS_VERSION)"
   else
-    read -r value
+    log_error "Sistema operativo no soportado"
+    exit 1
   fi
-
-  eval "$var_name='$value'"
 }
 
 detect_zabbix_agent() {
   log_step "Detectando paquete Zabbix Agent disponible..."
 
-  local PACKAGES=(
-    "zabbix-agent2"
-    "zabbix7.4-agent"
-    "zabbix7.2-agent"
-    "zabbix7.0-agent"
-    "zabbix6.4-agent"
-    "zabbix6.2-agent"
-    "zabbix6.0-agent"
-    "zabbix-agent"
-  )
-
-  INSTALLED_PACKAGE=""
+  local PACKAGES=("zabbix-agent2" "zabbix7.0-agent" "zabbix-agent")
 
   for pkg in "${PACKAGES[@]}"; do
-    if command -v dnf &>/dev/null; then
-      if dnf list available "$pkg" &>/dev/null; then
-        INSTALLED_PACKAGE="$pkg"
-        log "Paquete disponible: $pkg"
-        return 0
-      fi
-    else
-      if yum list available "$pkg" &>/dev/null; then
-        INSTALLED_PACKAGE="$pkg"
-        log "Paquete disponible: $pkg"
-        return 0
-      fi
-    fi
-  done
-
-  for pkg in "${PACKAGES[@]}"; do
-    if rpm -q "$pkg" &>/dev/null; then
+    if dnf list available "$pkg" &>/dev/null; then
       INSTALLED_PACKAGE="$pkg"
-      log "Paquete ya instalado: $pkg"
+      log "Paquete disponible: $pkg"
       return 0
     fi
   done
 
-  log_error "No se encontró ningún paquete Zabbix Agent disponible"
-  return 1
+  log_error "No se encontro paquete Zabbix Agent"
+  exit 1
 }
 
-# ==============================================
-# SOLICITAR CONFIGURACIÓN SI NO ESTÁ DEFINIDA
-# ==============================================
-echo ""
-echo -e "${BLUE}============================================${NC}"
-echo -e "${BLUE}  ZABBIX AGENT SECURE INSTALLER${NC}"
-echo -e "${BLUE}============================================${NC}"
-echo ""
-
-prompt_variable "ZABBIX_SERVER" "Ingrese el servidor Zabbix (ej: monitoreo.orangebox.cl):" "$ZABBIX_SERVER" "false"
-
-if [ -z "$ZABBIX_API_URL" ]; then
-  ZABBIX_API_URL="https://${ZABBIX_SERVER}/api_jsonrpc.php"
-fi
-
-prompt_variable "ZABBIX_ADMIN_USER" "Ingrese usuario administrador de Zabbix (default: Admin):" "$ZABBIX_ADMIN_USER" "false"
-if [ -z "$ZABBIX_ADMIN_USER" ]; then
-  ZABBIX_ADMIN_USER="Admin"
-fi
-
-prompt_variable "ZABBIX_ADMIN_PASS" "Ingrese password del usuario ${ZABBIX_ADMIN_USER}:" "$ZABBIX_ADMIN_PASS" "true"
-if [ -z "$ZABBIX_ADMIN_PASS" ]; then
-  log_error "La password es obligatoria"
-  exit 1
-fi
-
-# ==============================================
-# VERIFICAR ROOT
-# ==============================================
-if [ "$EUID" -ne 0 ]; then
-  log_error "Este script debe ejecutarse como root"
-  exit 1
-fi
-
-# ==============================================
-# DETECTAR SISTEMA OPERATIVO
-# ==============================================
-log_step "Detectando sistema operativo..."
-
-if [ -f /etc/redhat-release ]; then
-  OS_FAMILY="rhel"
-  OS_VERSION=$(rpm -q --qf "%{VERSION}" $(rpm -q --whatprovides redhat-release) 2>/dev/null | cut -d: -f1 | cut -d. -f1)
-  log "Sistema RHEL/AlmaLinux/Rocky detectado (versión $OS_VERSION)"
-elif [ -f /etc/debian_version ]; then
-  OS_FAMILY="debian"
-  OS_VERSION=$(cat /etc/debian_version | cut -d. -f1)
-  log "Sistema Debian/Ubuntu detectado (versión $OS_VERSION)"
-else
-  log_error "Sistema operativo no soportado"
-  exit 1
-fi
-
-# ==============================================
-# GENERAR PSK ÚNICA PARA ESTE AGENTE
-# ==============================================
-log_step "Generando PSK única para este agente..."
-
-HOSTNAME=$(hostname)
-HOST_IP=$(hostname -I | awk '{print $1}')
-PSK_IDENTITY="${HOSTNAME}_psk_$(date +%s)"
-PSK_KEY=$(openssl rand -hex 32)
-
-log "Hostname: $HOSTNAME"
-log "IP: $HOST_IP"
-log "PSK Identity: $PSK_IDENTITY"
-
-# ==============================================
-# INSTALAR REPOSITORIO ZABBIX (si es necesario)
-# ==============================================
-log_step "Configurando repositorio Zabbix..."
-
-if [ "$OS_FAMILY" = "rhel" ]; then
-  # Verificar si ya hay algún repositorio Zabbix instalado
-  if ! rpm -qa | grep -q "zabbix-release"; then
-    if [ "$OS_VERSION" -ge 9 ]; then
-      rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/el${OS_VERSION}/noarch/zabbix-release-latest-7.4.el${OS_VERSION}.noarch.rpm >>"$LOG_FILE" 2>&1
-    elif [ "$OS_VERSION" -eq 8 ]; then
-      rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/el8/noarch/zabbix-release-latest-7.4.el8.noarch.rpm >>"$LOG_FILE" 2>&1
-    else
-      rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/el7/noarch/zabbix-release-latest-7.4.el7.noarch.rpm >>"$LOG_FILE" 2>&1
-    fi
-
-    if command -v dnf &>/dev/null; then
-      dnf clean all >>"$LOG_FILE" 2>&1
-    else
-      yum clean all >>"$LOG_FILE" 2>&1
-    fi
-    log "Repositorio Zabbix 7.4 instalado"
-  else
-    log "Repositorio Zabbix ya existe"
-  fi
-fi
-
-# ==============================================
-# DETECTAR E INSTALAR AGENTE
-# ==============================================
-if detect_zabbix_agent; then
+install_agent() {
   log_step "Instalando $INSTALLED_PACKAGE..."
-  if command -v dnf &>/dev/null; then
-    dnf install -y "$INSTALLED_PACKAGE" >>"$LOG_FILE" 2>&1
-  else
-    yum install -y "$INSTALLED_PACKAGE" >>"$LOG_FILE" 2>&1
-  fi
 
-  # Determinar el nombre del servicio y archivo de configuración
   if [[ "$INSTALLED_PACKAGE" == *"agent2"* ]]; then
     SERVICE_NAME="zabbix-agent2"
     CONFIG_FILE="/etc/zabbix/zabbix_agent2.conf"
-    LOG_FILE_AGENT="/var/log/zabbix/zabbix_agent2.log"
   else
     SERVICE_NAME="zabbix-agent"
     CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
-    LOG_FILE_AGENT="/var/log/zabbix/zabbix_agentd.log"
   fi
 
-  log "Agente instalado: $INSTALLED_PACKAGE"
-  log "Servicio: $SERVICE_NAME"
-  log "Configuración: $CONFIG_FILE"
-else
-  log_error "No se pudo instalar Zabbix Agent"
-  exit 1
-fi
+  dnf install -y "$INSTALLED_PACKAGE" >>"$LOG_FILE" 2>&1
+  log "$INSTALLED_PACKAGE instalado"
+}
 
-# ==============================================
-# CREAR USUARIO ZABBIX SI NO EXISTE
-# ==============================================
-if ! id -u zabbix &>/dev/null; then
-  log_step "Creando usuario zabbix..."
-  useradd -r -s /sbin/nologin zabbix
-  log "Usuario zabbix creado"
-fi
+configure_psk() {
+  log_step "Configurando PSK..."
 
-# ==============================================
-# CONFIGURAR PSK
-# ==============================================
-log_step "Configurando PSK..."
+  mkdir -p /etc/zabbix
+  echo "$PSK_KEY" >/etc/zabbix/zabbix_agentd.psk
+  chmod 400 /etc/zabbix/zabbix_agentd.psk
+  chown zabbix:zabbix /etc/zabbix/zabbix_agentd.psk 2>/dev/null
+  log "Archivo PSK creado"
+}
 
-mkdir -p /etc/zabbix
-echo "$PSK_KEY" >/etc/zabbix/zabbix_agentd.psk
-chmod 400 /etc/zabbix/zabbix_agentd.psk
-chown zabbix:zabbix /etc/zabbix/zabbix_agentd.psk
-log "Archivo PSK creado en /etc/zabbix/zabbix_agentd.psk"
+configure_agent() {
+  log_step "Configurando agente..."
 
-# ==============================================
-# CONFIGURAR ZABBIX AGENT
-# ==============================================
-log_step "Configurando Zabbix Agent..."
-
-if [[ "$INSTALLED_PACKAGE" == *"agent2"* ]]; then
   cat >"$CONFIG_FILE" <<EOF
-Server=${ZABBIX_SERVER}
+Server=127.0.0.1
 ServerActive=${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
 Hostname=${HOSTNAME}
 
@@ -269,220 +120,114 @@ TLSAccept=psk
 TLSPSKIdentity=${PSK_IDENTITY}
 TLSPSKFile=/etc/zabbix/zabbix_agentd.psk
 
-StartAgents=3
+StartAgents=0
 Timeout=30
-LogFile=${LOG_FILE_AGENT}
+LogFile=/var/log/zabbix/zabbix_agentd.log
 LogFileSize=10
 DebugLevel=3
-
-Include=/etc/zabbix/zabbix_agent2.d/*.conf
 EOF
-else
-  cat >"$CONFIG_FILE" <<EOF
-Server=${ZABBIX_SERVER}
-ServerActive=${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
-Hostname=${HOSTNAME}
 
-TLSConnect=psk
-TLSAccept=psk
-TLSPSKIdentity=${PSK_IDENTITY}
-TLSPSKFile=/etc/zabbix/zabbix_agentd.psk
+  log "Configuracion creada en $CONFIG_FILE"
+}
 
-StartAgents=3
-Timeout=30
-LogFile=${LOG_FILE_AGENT}
-LogFileSize=10
+start_agent() {
+  log_step "Iniciando agente..."
 
-Include=/etc/zabbix/zabbix_agentd.d/*.conf
-EOF
-fi
+  systemctl restart "$SERVICE_NAME"
+  systemctl enable "$SERVICE_NAME"
 
-log "Archivo de configuración creado: $CONFIG_FILE"
-
-# ==============================================
-# INICIAR SERVICIO
-# ==============================================
-log_step "Iniciando Zabbix Agent..."
-
-systemctl restart "$SERVICE_NAME"
-systemctl enable "$SERVICE_NAME"
-
-if systemctl is-active --quiet "$SERVICE_NAME"; then
-  log "Zabbix Agent está corriendo"
-else
-  log_error "Zabbix Agent no pudo iniciar"
-  systemctl status "$SERVICE_NAME" --no-pager
-  exit 1
-fi
-
-# ==============================================
-# INSTALAR JQ SI NO EXISTE
-# ==============================================
-if ! command -v jq &>/dev/null; then
-  log_step "Instalando jq..."
-  if [ "$OS_FAMILY" = "rhel" ]; then
-    if command -v dnf &>/dev/null; then
-      dnf install -y jq >>"$LOG_FILE" 2>&1
-    else
-      yum install -y jq >>"$LOG_FILE" 2>&1
-    fi
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    log "Agente corriendo"
   else
-    apt install -y jq >>"$LOG_FILE" 2>&1
+    log_error "Error al iniciar agente"
+    exit 1
   fi
-fi
+}
 
-# ==============================================
-# REGISTRAR HOST EN ZABBIX VÍA API
-# ==============================================
-log_step "Registrando host en Zabbix Server via API..."
+register_host() {
+  log_step "Registrando host en Zabbix via API..."
 
-# Obtener template id
-TEMPLATE_ID=$(curl -s -k -X POST \
-  -H "Content-Type: application/json-rpc" \
-  -d "{
-    \"jsonrpc\": \"2.0\",
-    \"method\": \"template.get\",
-    \"params\": {
-      \"filter\": {\"name\": [\"Template OS Linux by Zabbix agent\"]},
-      \"output\": [\"templateid\"]
-    },
-    \"auth\": null,
-    \"id\": 1
-  }" ${ZABBIX_API_URL} | jq -r '.result[0].templateid')
-
-# Obtener group id
-GROUP_ID=$(curl -s -k -X POST \
-  -H "Content-Type: application/json-rpc" \
-  -d "{
-    \"jsonrpc\": \"2.0\",
-    \"method\": \"hostgroup.get\",
-    \"params\": {
-      \"filter\": {\"name\": [\"Linux servers\"]},
-      \"output\": [\"groupid\"]
-    },
-    \"auth\": null,
-    \"id\": 1
-  }" ${ZABBIX_API_URL} | jq -r '.result[0].groupid')
-
-# Autenticar
-AUTH_TOKEN=$(curl -s -k -X POST \
-  -H "Content-Type: application/json-rpc" \
-  -d "{
-    \"jsonrpc\": \"2.0\",
-    \"method\": \"user.login\",
-    \"params\": {
-      \"username\": \"${ZABBIX_ADMIN_USER}\",
-      \"password\": \"${ZABBIX_ADMIN_PASS}\"
-    },
-    \"id\": 1
-  }" ${ZABBIX_API_URL} | jq -r '.result')
-
-if [ "$AUTH_TOKEN" = "null" ] || [ -z "$AUTH_TOKEN" ]; then
-  log_error "No se pudo autenticar en Zabbix API"
-  log_warn "Registro manual requerido"
-else
-  log "Autenticación exitosa"
-
-  CREATE_RESULT=$(curl -s -k -X POST \
+  RESPONSE=$(curl -s -k -X POST \
     -H "Content-Type: application/json-rpc" \
-    -d "{
-        \"jsonrpc\": \"2.0\",
-        \"method\": \"host.create\",
-        \"params\": {
-          \"host\": \"${HOSTNAME}\",
-          \"name\": \"${HOSTNAME}\",
-          \"groups\": [{\"groupid\": \"${GROUP_ID}\"}],
-          \"templates\": [{\"templateid\": \"${TEMPLATE_ID}\"}],
-          \"interfaces\": [{
-            \"type\": 1,
-            \"main\": 1,
-            \"useip\": 1,
-            \"ip\": \"${HOST_IP}\",
-            \"dns\": \"\",
-            \"port\": \"10050\"
-          }],
-          \"tls_connect\": 2,
-          \"tls_accept\": 2,
-          \"tls_psk_identity\": \"${PSK_IDENTITY}\",
-          \"tls_psk\": \"${PSK_KEY}\"
-        },
-        \"auth\": \"${AUTH_TOKEN}\",
-        \"id\": 1
-      }" ${ZABBIX_API_URL})
+    -H "Authorization: Bearer ${API_TOKEN}" \
+    -d '{
+            "jsonrpc": "2.0",
+            "method": "host.create",
+            "params": {
+                "host": "'"${HOSTNAME}"'",
+                "name": "'"${HOSTNAME}"'",
+                "groups": [{"groupid": "'"${GROUP_ID}"'"}],
+                "templates": [{"templateid": "'"${TEMPLATE_ID}"'"}],
+                "interfaces": [{
+                    "type": 1,
+                    "main": 1,
+                    "useip": 1,
+                    "ip": "'"${HOST_IP}"'",
+                    "dns": "",
+                    "port": "10050"
+                }],
+                "tls_connect": 2,
+                "tls_accept": 2,
+                "tls_psk_identity": "'"${PSK_IDENTITY}"'",
+                "tls_psk": "'"${PSK_KEY}"'"
+            },
+            "id": 1
+        }' ${ZABBIX_API_URL})
 
-  HOST_ID=$(echo "$CREATE_RESULT" | jq -r '.result.hostids[0]')
-
-  if [ "$HOST_ID" != "null" ] && [ -n "$HOST_ID" ]; then
-    log "Host registrado exitosamente (ID: $HOST_ID)"
+  if echo "$RESPONSE" | grep -q "hostids"; then
+    log "Host registrado exitosamente"
   else
-    log_error "Error al registrar host"
+    log_error "Error al registrar host: $RESPONSE"
   fi
-fi
+}
 
-# ==============================================
-# GUARDAR CREDENCIALES
-# ==============================================
-CRED_FILE="/root/zabbix_agent_${HOSTNAME}_credentials.txt"
-cat >"$CRED_FILE" <<EOF
+save_credentials() {
+  CRED_FILE="/root/zabbix_agent_${HOSTNAME}_credentials.txt"
+  cat >"$CRED_FILE" <<EOF
 =============================================
 ZABBIX AGENT CREDENCIALES
 =============================================
 Hostname: $HOSTNAME
 IP: $HOST_IP
 Servidor: $ZABBIX_SERVER
-Fecha: $(date)
-
-Paquete instalado: $INSTALLED_PACKAGE
-Servicio: $SERVICE_NAME
-Configuración: $CONFIG_FILE
-
 PSK Identity: $PSK_IDENTITY
 PSK Key: $PSK_KEY
-
-Archivos:
-  Configuración: $CONFIG_FILE
-  Clave PSK: /etc/zabbix/zabbix_agentd.psk
-  Log: $LOG_FILE
-
-Comando de prueba:
-zabbix_get -s $HOST_IP -p 10050 -k "agent.ping" \\
-    --tls-connect psk \\
-    --tls-psk-identity "$PSK_IDENTITY" \\
-    --tls-psk-file /etc/zabbix/zabbix_agentd.psk
-
 =============================================
-COMANDOS ÚTILES
-=============================================
-# Ver estado
-systemctl status $SERVICE_NAME
-
-# Ver logs
-tail -f $LOG_FILE_AGENT
-
-# Reiniciar agente
-systemctl restart $SERVICE_NAME
 EOF
+  chmod 600 "$CRED_FILE"
+  log "Credenciales guardadas en: $CRED_FILE"
+}
 
-chmod 600 "$CRED_FILE"
-log "Credenciales guardadas en: $CRED_FILE"
+show_summary() {
+  echo ""
+  echo -e "${GREEN}============================================${NC}"
+  echo -e "${GREEN}  ZABBIX AGENT INSTALADO CORRECTAMENTE${NC}"
+  echo -e "${GREEN}============================================${NC}"
+  echo ""
+  echo "Hostname: $HOSTNAME"
+  echo "IP: $HOST_IP"
+  echo "Servidor: $ZABBIX_SERVER"
+  echo "PSK Identity: $PSK_IDENTITY"
+  echo ""
+  echo "Credenciales: $CRED_FILE"
+  echo "Log: $LOG_FILE"
+  echo ""
+  echo -e "${GREEN}============================================${NC}"
+}
 
 # ==============================================
-# RESUMEN FINAL
+# MAIN
 # ==============================================
-echo ""
 echo -e "${GREEN}============================================${NC}"
-echo -e "${GREEN}  ZABBIX AGENT INSTALADO CORRECTAMENTE${NC}"
-echo -e "${GREEN}============================================${NC}"
-echo ""
-echo "Hostname: $HOSTNAME"
-echo "IP: $HOST_IP"
-echo "Servidor: $ZABBIX_SERVER"
-echo "Agente: $INSTALLED_PACKAGE"
-echo "Servicio: $SERVICE_NAME"
-echo ""
-echo "PSK Identity: $PSK_IDENTITY"
-echo ""
-echo "Credenciales: $CRED_FILE"
-echo "Log: $LOG_FILE"
-echo ""
-echo -e "${GREEN}============================================${NC}"
+echo -e "${GREEN}  ZABBIX AGENT SECURE INSTALLER${NC}"
+echo -e "${GREEN}============================================${NC}\n"
+
+detect_os
+detect_zabbix_agent
+install_agent
+configure_psk
+configure_agent
+start_agent
+register_host
+save_credentials
+show_summary
