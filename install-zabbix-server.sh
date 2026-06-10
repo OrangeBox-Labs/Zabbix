@@ -520,7 +520,7 @@ create_database() {
   # Determinar conexion optima
   determine_db_connection
 
-  # Crear usuario y base de datos
+  # Crear usuario y base de datos usando root con archivo .my.cnf
   mysql --defaults-file=/root/.my.cnf <<EOF
 create database if not exists zabbix character set utf8mb4 collate utf8mb4_bin;
 create user if not exists zabbix@${DB_HOST_TYPE} identified by '${DB_PASSWORD}';
@@ -529,11 +529,34 @@ set global log_bin_trust_function_creators = 1;
 flush privileges;
 EOF
 
+  if [ $? -ne 0 ]; then
+    log_error "Error al crear base de datos o usuario zabbix"
+    exit 1
+  fi
+
   log_info "Base de datos y usuario creados"
 
   log_step "Importando esquema inicial..."
-  zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -p${DB_PASSWORD} -h ${DB_HOST_TYPE} zabbix >>"$LOG_FILE" 2>&1
 
+  # Forma correcta: usar --password=VALOR (sin espacios) o -pVALOR
+  # También podemos usar el archivo .my.cnf para el usuario zabbix
+  if zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix --password="${DB_PASSWORD}" -h ${DB_HOST_TYPE} zabbix >>"$LOG_FILE" 2>&1; then
+    log_info "Esquema de base de datos importado correctamente"
+  else
+    log_error "Error al importar el esquema. Verificando..."
+
+    # Intentar de nuevo con método alternativo
+    log_warn "Reintentando con método alternativo..."
+    zcat /usr/share/zabbix/sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -p"${DB_PASSWORD}" -h ${DB_HOST_TYPE} zabbix >>"$LOG_FILE" 2>&1
+
+    if [ $? -ne 0 ]; then
+      log_error "No se pudo importar el esquema. Verifique la contraseña."
+      log_error "Password de DB: ${DB_PASSWORD}"
+      exit 1
+    fi
+  fi
+
+  # Desactivar log_bin_trust_function_creators
   mysql --defaults-file=/root/.my.cnf <<EOF
 set global log_bin_trust_function_creators = 0;
 flush privileges;
