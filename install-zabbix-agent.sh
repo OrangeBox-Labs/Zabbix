@@ -392,6 +392,25 @@ configure_permissions() {
   log_info "Permisos configurados correctamente"
 }
 
+fix_pid_file() {
+  log_step "Corrigiendo archivo PID para systemd..."
+
+  # Crear directorio para PID
+  mkdir -p /run/zabbix
+  chown zabbix:zabbix /run/zabbix
+  chmod 755 /run/zabbix
+
+  # Agregar PidFile a la configuración si no existe
+  if ! grep -q "^PidFile" /etc/zabbix/zabbix_agentd.conf; then
+    echo "PidFile=/run/zabbix/zabbix_agentd.pid" >>/etc/zabbix/zabbix_agentd.conf
+    log_info "PidFile agregado a la configuración"
+  else
+    log_info "PidFile ya existe en la configuración"
+  fi
+
+  log_info "Directorio PID creado y configurado"
+}
+
 generate_psk() {
   log_step "Generando PSK para TLS..."
 
@@ -434,6 +453,9 @@ TLSConnect=psk
 TLSAccept=psk
 TLSPSKIdentity=${PSK_IDENTITY}
 TLSPSKFile=/etc/zabbix/ssl/psk.key
+
+# Archivo PID para systemd
+PidFile=/run/zabbix/zabbix_agentd.pid
 EOF
 
   # Permisos del archivo de configuración
@@ -526,37 +548,26 @@ EOF
 start_agent() {
   log_step "Iniciando servicio del agente..."
 
-  # Asegurar que el servicio systemd existe (RPM lo crea, binario lo necesita)
-  if [ ! -f /usr/lib/systemd/system/zabbix-agent.service ] && [ ! -f /etc/systemd/system/zabbix-agent.service ]; then
-    log_warn "Servicio systemd no encontrado, creando..."
-    cat >/etc/systemd/system/zabbix-agent.service <<'EOF'
-[Unit]
-Description=Zabbix Agent
-After=network.target
+  # Corregir archivo PID antes de iniciar
+  fix_pid_file
 
-[Service]
-Type=simple
-User=zabbix
-Group=zabbix
-ExecStart=/usr/sbin/zabbix_agentd -f -c /etc/zabbix/zabbix_agentd.conf
-ExecStop=/bin/kill -TERM $MAINPID
-Restart=on-failure
-RestartSec=10
+  # Recargar systemd por si acaso
+  systemctl daemon-reload
 
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-  fi
-
-  # Habilitar e iniciar
+  # Habilitar servicio
   systemctl enable zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
-  systemctl restart zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
 
-  sleep 3
+  # Iniciar
+  systemctl start zabbix-agent
 
+  # Verificar
+  sleep 2
   if systemctl is-active zabbix-agent &>/dev/null; then
     log_info "Agente iniciado correctamente"
+    # Verificar que no hay error de PID
+    if ! journalctl -u zabbix-agent -n 5 --no-pager | grep -q "Can't open PID file"; then
+      log_debug "No hay errores de PID en los logs"
+    fi
   else
     log_error "Error al iniciar agente"
     journalctl -u zabbix-agent -n 10 --no-pager
@@ -615,6 +626,7 @@ show_completion() {
   echo -e "  • IP: ${GREEN}${AGENT_IP}${NC}"
   echo -e "  • Servidor: ${GREEN}${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}${NC}"
   echo -e "  • TLS/PSK: ${GREEN}Habilitado${NC}"
+  echo -e "  • Archivo PID: ${GREEN}/run/zabbix/zabbix_agentd.pid${NC}"
   echo -e "\n${YELLOW}📋 VERIFICACIÓN:${NC}"
   echo -e "  systemctl status zabbix-agent"
   echo -e "  zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname"
@@ -730,6 +742,7 @@ install_agent
 configure_permissions
 generate_psk
 configure_agent
+fix_pid_file
 configure_firewall
 test_api_connection
 register_host
