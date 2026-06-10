@@ -8,6 +8,7 @@
 # Descripcion: Instalacion de Zabbix Server 7.4 en AlmaLinux 10
 #              con MySQL/MariaDB, Apache y SELinux
 #              Incluye hardening de MySQL y tuning para ~200 servidores
+#              Configura locales: en_US, es_ES, es_CL
 # ==============================================
 
 RED='\033[0;31m'
@@ -22,7 +23,6 @@ INSTALL_TYPE="server"
 MYSQL_TUNING=true
 
 # Variables estimadas para Zabbix con 200 servidores
-# Aprox 200 servidores x 30 items x 60 segundos de intervalo = 6000 valores por segundo
 EXPECTED_HOSTS=200
 EXPECTED_ITEMS=30
 EXPECTED_VALUES_PER_SECOND=6000
@@ -149,7 +149,6 @@ check_mysql_installed() {
     MYSQL_ALREADY_INSTALLED=true
     log_info "MySQL/MariaDB ya esta instalado"
 
-    # Verificar si podemos conectar como root
     if mysql -uroot -e "SELECT 1" &>/dev/null; then
       log_info "MySQL/MariaDB esta accesible (sin password)"
     elif [ -f /root/.my.cnf ] && mysql --defaults-file=/root/.my.cnf -e "SELECT 1" &>/dev/null; then
@@ -178,25 +177,16 @@ install_mariadb() {
 secure_mariadb() {
   log_step "Aplicando hardening a MySQL/MariaDB..."
 
-  # Crear archivo temporal con comandos de seguridad
   local SECURE_SQL="/tmp/mysql_secure_$(date +%s).sql"
 
   cat >"$SECURE_SQL" <<EOF
--- Eliminar usuarios anonimos
 DELETE FROM mysql.user WHERE User='';
-
--- Eliminar base de datos test
 DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
-
--- Eliminar acceso remoto para root
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
-
--- Limitar usuarios
 FLUSH PRIVILEGES;
 EOF
 
-  # Ejecutar comandos de seguridad
   if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
     mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" <"$SECURE_SQL" >>"$LOG_FILE" 2>&1
   else
@@ -204,25 +194,21 @@ EOF
   fi
 
   rm -f "$SECURE_SQL"
-
-  log_info "Hardening de MySQL aplicado: usuarios anonimos eliminados, DB test eliminada, acceso remoto deshabilitado"
+  log_info "Hardening de MySQL aplicado"
 }
 
 setup_mysql_root_password() {
   log_step "Configurando password de root de MySQL..."
 
   if [ "$MYSQL_ALREADY_INSTALLED" = true ]; then
-    # Cambiar password existente
     if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
       mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1 2>/dev/null ||
         mysql -uroot -p"${OLD_MYSQL_ROOT_PASSWORD}" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';" >>"$LOG_FILE" 2>&1
     fi
   else
-    # Configurar password por primera vez
     mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1
   fi
 
-  # Crear archivo de configuracion para mysql client
   cat >/root/.my.cnf <<EOF
 [client]
 user=root
@@ -244,15 +230,10 @@ configure_mysql_tuning() {
   local MYSQL_TUNING_FILE="/etc/my.cnf.d/zabbix-tuning.cnf"
   local MYSQL_VERSION=$(mysql --version | grep -oP 'Ver \K[0-9.]+' | cut -d. -f1)
 
-  # Calcular valores optimos para ~200 servidores Zabbix
-  # InnoDB: Los datos de Zabbix crecen ~1GB por 100 hosts por mes (aprox)
-  local INNODB_BUFFER_POOL_SIZE="2G" # 25% de RAM si hay 8GB, ajustar
-  local INNODB_LOG_FILE_SIZE="512M"
-  local INNODB_LOG_BUFFER_SIZE="64M"
-  local INNODB_FLUSH_LOG_AT_TRX_COMMIT="2" # Mejor performance para Zabbix
-
-  # Calcular RAM disponible
   local TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
+  local INNODB_BUFFER_POOL_SIZE="2G"
+  local INNODB_LOG_FILE_SIZE="512M"
+
   if [ "$TOTAL_RAM" -ge 16 ]; then
     INNODB_BUFFER_POOL_SIZE="4G"
     INNODB_LOG_FILE_SIZE="1G"
@@ -270,20 +251,17 @@ configure_mysql_tuning() {
 # Generado: $(date)
 # ==============================================
 [mysqld]
-
-# --- Configuracion basica ---
 max_connections = 500
 max_connect_errors = 1000000
 thread_cache_size = 128
 table_open_cache = 4000
 table_definition_cache = 4000
 
-# --- InnoDB (motor usado por Zabbix) ---
 default_storage_engine = InnoDB
 innodb_buffer_pool_size = ${INNODB_BUFFER_POOL_SIZE}
 innodb_log_file_size = ${INNODB_LOG_FILE_SIZE}
-innodb_log_buffer_size = ${INNODB_LOG_BUFFER_SIZE}
-innodb_flush_log_at_trx_commit = ${INNODB_FLUSH_LOG_AT_TRX_COMMIT}
+innodb_log_buffer_size = 64M
+innodb_flush_log_at_trx_commit = 2
 innodb_flush_method = O_DIRECT
 innodb_file_per_table = 1
 innodb_read_io_threads = 16
@@ -294,50 +272,37 @@ innodb_buffer_pool_instances = 4
 innodb_lock_wait_timeout = 50
 innodb_print_all_deadlocks = 1
 
-# --- Query cache (deshabilitado en MySQL 8+) ---
-$([ "$MYSQL_VERSION" -lt 8 ] && echo "query_cache_size = 0" || echo "# query_cache_size = 0 (no aplica en MySQL 8+)")
-$([ "$MYSQL_VERSION" -lt 8 ] && echo "query_cache_type = 0" || echo "# query_cache_type = 0")
-
-# --- Timeouts y limites ---
 connect_timeout = 30
 wait_timeout = 600
 interactive_timeout = 600
 tmp_table_size = 64M
 max_heap_table_size = 64M
 
-# --- Sorting y temporales ---
 sort_buffer_size = 2M
 join_buffer_size = 2M
 read_buffer_size = 1M
 read_rnd_buffer_size = 4M
 
-# --- Logging (minimo para Zabbix) ---
 slow_query_log = 1
 slow_query_log_file = /var/log/mariadb/slow-queries.log
 long_query_time = 2
 log_queries_not_using_indexes = 1
 
-# --- Binlog (si aplica) ---
 expire_logs_days = 7
 max_binlog_size = 100M
 
-# --- Zabbix especifico ---
-# Optimizaciones para el esquema de Zabbix
 innodb_strict_mode = ON
 sql_mode = "NO_ENGINE_SUBSTITUTION"
 
-# --- Caracteres ---
 character_set_server = utf8mb4
 collation_server = utf8mb4_bin
 
-# --- Performance adicional ---
 performance_schema = ON
 max_allowed_packet = 16M
 EOF
 
-  # Reiniciar MariaDB para aplicar cambios
   systemctl restart mariadb >>"$LOG_FILE" 2>&1
-  log_info "Tuning de MySQL aplicado: buffer_pool=${INNODB_BUFFER_POOL_SIZE}, log_file=${INNODB_LOG_FILE_SIZE}, max_connections=500"
+  log_info "Tuning de MySQL aplicado: buffer_pool=${INNODB_BUFFER_POOL_SIZE}, max_connections=500"
 }
 
 setup_passwords() {
@@ -419,7 +384,6 @@ configure_server() {
   sed -i "s/^# DBPassword=.*/DBPassword=${DB_PASSWORD}/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^DBPassword=.*/DBPassword=${DB_PASSWORD}/" /etc/zabbix/zabbix_server.conf
 
-  # Ajustes adicionales para rendimiento con 200 servidores
   sed -i "s/^# StartPollers=.*/StartPollers=40/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^# StartPollersUnreachable=.*/StartPollersUnreachable=10/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^# StartTrappers=.*/StartTrappers=20/" /etc/zabbix/zabbix_server.conf
@@ -430,9 +394,6 @@ configure_server() {
   sed -i "s/^# TrendCacheSize=.*/TrendCacheSize=64M/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^# ValueCacheSize=.*/ValueCacheSize=128M/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^# Timeout=.*/Timeout=10/" /etc/zabbix/zabbix_server.conf
-
-  sed -i "s/^; php_value date.timezone Europe\/Riga/php_value date.timezone America\/Santiago/" /etc/httpd/conf.d/zabbix.conf
-  sed -i "s/^# php_value date.timezone Europe\/Riga/php_value date.timezone America\/Santiago/" /etc/httpd/conf.d/zabbix.conf
 
   log_info "Zabbix Server configurado (pollers=40, trappers=20, cache=256M)"
 }
@@ -446,6 +407,55 @@ configure_agent() {
   sed -i "s/^Hostname=Zabbix server/Hostname=$(hostname)/" /etc/zabbix/zabbix_agentd.conf
 
   log_info "Zabbix Agent configurado"
+}
+
+configure_locales() {
+  log_step "Configurando locales del sistema..."
+
+  log_info "Instalando paquetes de idiomas..."
+  dnf install -y langpacks-en langpacks-es glibc-langpack-en glibc-langpack-es >>"$LOG_FILE" 2>&1
+
+  # Lista de locales a instalar
+  local LOCALES=(
+    "en_US.UTF-8"
+    "es_ES.UTF-8"
+    "es_CL.UTF-8"
+  )
+
+  for locale in "${LOCALES[@]}"; do
+    if ! locale -a 2>/dev/null | grep -q "$locale"; then
+      log_info "Generando locale: $locale"
+      localedef -c -i $(echo $locale | cut -d. -f1) -f UTF-8 "$locale" >>"$LOG_FILE" 2>&1
+    else
+      log_info "Locale $locale ya existe"
+    fi
+  done
+
+  # Configurar locales del sistema
+  cat >/etc/locale.conf <<EOF
+LANG=en_US.UTF-8
+LC_ALL=en_US.UTF-8
+LC_CTYPE=en_US.UTF-8
+LC_MESSAGES=en_US.UTF-8
+LC_TIME=es_CL.UTF-8
+LC_MONETARY=es_CL.UTF-8
+EOF
+
+  source /etc/locale.conf 2>/dev/null || true
+
+  # Configurar Zabbix PHP para usar multiples locales
+  if [ -f /etc/httpd/conf.d/zabbix.conf ]; then
+    # Asegurar que el timezone y charset esten configurados
+    sed -i "s/^; php_value date.timezone.*/php_value date.timezone America\/Santiago/" /etc/httpd/conf.d/zabbix.conf
+    sed -i "s/^# php_value date.timezone.*/php_value date.timezone America\/Santiago/" /etc/httpd/conf.d/zabbix.conf
+
+    # Agregar configuracion de locale si no existe
+    if ! grep -q "php_value locale" /etc/httpd/conf.d/zabbix.conf; then
+      sed -i "/php_value date.timezone/a \    php_value default_charset UTF-8\n    php_value locale en_US.UTF-8" /etc/httpd/conf.d/zabbix.conf
+    fi
+  fi
+
+  log_info "Locales configurados: en_US.UTF-8, es_ES.UTF-8, es_CL.UTF-8"
 }
 
 start_services() {
@@ -484,6 +494,20 @@ verify_mysql_tuning() {
   fi
 }
 
+verify_locales() {
+  log_step "Verificando locales instalados..."
+
+  echo -e "\n${YELLOW}Locales disponibles:${NC}"
+  locale -a | grep -E "en_US|es_ES|es_CL" | while read line; do
+    echo -e "  ${GREEN}✓${NC} $line"
+  done
+
+  echo -e "\n${YELLOW}Configuracion actual del sistema:${NC}"
+  locale | while read line; do
+    echo -e "  ${BLUE}→${NC} $line"
+  done
+}
+
 create_credentials_file() {
   local server_ip=$(hostname -I | awk '{print $1}')
 
@@ -508,6 +532,11 @@ create_credentials_file() {
   Password Zabbix DB: ${DB_PASSWORD}
   Base de datos: zabbix
 
+🌐 LOCALES CONFIGURADOS:
+  - en_US.UTF-8 (Ingles - Sistema)
+  - es_ES.UTF-8 (Español - España)
+  - es_CL.UTF-8 (Español - Chile)
+
 ⚙️ CONFIGURACION DE RENDIMIENTO:
   Servidores esperados: ${EXPECTED_HOSTS}
   Items por servidor: ${EXPECTED_ITEMS}
@@ -528,6 +557,7 @@ create_credentials_file() {
   Zabbix Agent: /etc/zabbix/zabbix_agentd.conf
   MySQL Tuning: /etc/my.cnf.d/zabbix-tuning.cnf
   Apache: /etc/httpd/conf.d/zabbix.conf
+  Locales: /etc/locale.conf
 
 📋 LOGS:
   Zabbix Server: /var/log/zabbix/zabbix_server.log
@@ -551,6 +581,10 @@ tail -f /var/log/mariadb/slow-queries.log
 mysql --defaults-file=/root/.my.cnf
 mysql -uzabbix -p'${DB_PASSWORD}' zabbix
 
+# Verificar locales
+locale -a | grep -E "en_US|es_ES|es_CL"
+locale
+
 # Monitorear performance
 mysqladmin --defaults-file=/root/.my.cnf status
 mysql --defaults-file=/root/.my.cnf -e "SHOW ENGINE INNODB STATUS\G"
@@ -564,6 +598,8 @@ mysql --defaults-file=/root/.my.cnf -e "SHOW ENGINE INNODB STATUS\G"
 3. Monitorear el tamaño de la DB: du -sh /var/lib/mysql/zabbix
 4. Revisar logs de slow queries para optimizar
 5. Configurar particion separada para /var/lib/mysql si es posible
+6. En Zabbix Web, ir a Administration → General → Localization
+   y seleccionar es_CL (Español - Chile) si se desea
 
 =============================================
   🌐 https://www.orangebox.cl
@@ -589,6 +625,10 @@ show_completion() {
   echo -e "  ${CREDENTIALS_FILE}" | tee -a "$LOG_FILE"
   echo -e "\n${YELLOW}LOG DE INSTALACION:${NC}" | tee -a "$LOG_FILE"
   echo -e "  ${LOG_FILE}" | tee -a "$LOG_FILE"
+  echo -e "\n${YELLOW}LOCALES DISPONIBLES:${NC}" | tee -a "$LOG_FILE"
+  echo -e "  - en_US.UTF-8 (Ingles)" | tee -a "$LOG_FILE"
+  echo -e "  - es_ES.UTF-8 (Español - España)" | tee -a "$LOG_FILE"
+  echo -e "  - es_CL.UTF-8 (Español - Chile)" | tee -a "$LOG_FILE"
   echo -e "\n${GREEN}============================================${NC}" | tee -a "$LOG_FILE"
   echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}" | tee -a "$LOG_FILE"
   echo -e "${GREEN}============================================${NC}\n" | tee -a "$LOG_FILE"
@@ -637,6 +677,7 @@ echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Instalador de Zabbix Server 7.4${NC}"
 echo -e "${GREEN}  para AlmaLinux 10${NC}"
 echo -e "${GREEN}  Optimizado para ~200 servidores${NC}"
+echo -e "${GREEN}  Locales: en_US, es_ES, es_CL${NC}"
 echo -e "${GREEN}============================================${NC}\n"
 
 check_root
@@ -656,6 +697,7 @@ if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ]; then
   echo -e "  • Zabbix Server (configurado para ~200 servidores)"
   echo -e "  • Zabbix Agent"
   echo -e "  • SELinux Policy"
+  echo -e "  • Locales: en_US, es_ES, es_CL"
   echo -e "\n${YELLOW}¿Desea continuar? (s/N): ${NC}"
   read -r confirm
   if [[ ! "$confirm" =~ ^[Ss]$ ]]; then
@@ -683,9 +725,11 @@ else
   create_database
   configure_server
   configure_agent
+  configure_locales
   start_services
   configure_firewall
   verify_mysql_tuning
+  verify_locales
   create_credentials_file
   show_completion
 fi
