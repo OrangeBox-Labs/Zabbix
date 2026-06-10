@@ -31,7 +31,6 @@ Este script instala y configura Zabbix Agent 2 en sistemas Linux de manera segur
 | Multi-distribución | Soporta RHEL 7/8/9/10, AlmaLinux, Rocky, Ubuntu 22.04/24.04 |
 | Logging completo | Registro detallado de toda la instalación |
 | Backup de credenciales | Guarda PSK y configuración en archivo seguro |
-| DNS unificado | Usa monitoreo.orangebox.cl para resolver interno/externo |
 
 ## Modo Interactivo vs Automático
 
