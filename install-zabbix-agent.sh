@@ -157,9 +157,15 @@ detect_os() {
 install_dependencies() {
   log_step "Instalando dependencias..."
   case $OS_FAMILY in
-  rhel | almalinux) dnf install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1 ;;
-  debian) apt-get update -qq && apt-get install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1 ;;
-  suse) zypper install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1 ;;
+  rhel | almalinux)
+    dnf install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
+    ;;
+  debian)
+    apt-get update -qq && apt-get install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
+    ;;
+  suse)
+    zypper install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
+    ;;
   esac
   log_info "Dependencias instaladas"
 }
@@ -267,7 +273,7 @@ install_agent_from_binary() {
 
   tar -xzf zabbix_agent.tar.gz >>/tmp/zabbix_agent_install.log 2>&1
 
-  # Copiar binarios
+  # Copiar binarios incluyendo herramientas adicionales
   cp zabbix_agent/sbin/zabbix_agentd /usr/sbin/ 2>/dev/null
   cp zabbix_agent/bin/zabbix_get /usr/bin/ 2>/dev/null
   cp zabbix_agent/bin/zabbix_sender /usr/bin/ 2>/dev/null
@@ -278,7 +284,9 @@ install_agent_from_binary() {
   # Crear directorios
   mkdir -p /etc/zabbix
   mkdir -p /var/log/zabbix
-  chown zabbix:zabbix /var/log/zabbix
+  mkdir -p /run/zabbix
+  chown -R zabbix:zabbix /var/log/zabbix /run/zabbix
+  chown -R zabbix:zabbix /etc/zabbix 2>/dev/null || true
 
   # Crear servicio systemd
   cat >/etc/systemd/system/zabbix-agent.service <<'EOF'
@@ -290,9 +298,10 @@ After=network.target
 Type=simple
 User=zabbix
 Group=zabbix
-ExecStart=/usr/sbin/zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf
+ExecStart=/usr/sbin/zabbix_agentd -f -c /etc/zabbix/zabbix_agentd.conf
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
@@ -308,10 +317,10 @@ EOF
 }
 
 install_agent() {
-  log_step "Instalando Zabbix Agent 7.4..."
+  log_step "Instalando Zabbix Agent 7.4 y herramientas adicionales..."
 
   # Si ya se instaló desde binario, salir
-  if command -v zabbix_agentd &>/dev/null; then
+  if command -v zabbix_agentd &>/dev/null && [ -f /etc/yum.repos.d/zabbix.repo ]; then
     AGENT_VERSION=$(zabbix_agentd --version 2>/dev/null | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
     log_info "Zabbix Agent ya instalado: $AGENT_VERSION"
     AGENT_TYPE="zabbix_agentd"
@@ -321,11 +330,11 @@ install_agent() {
 
   case $OS_FAMILY in
   rhel | almalinux)
-    # Intentar instalar desde repositorio
-    dnf install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
+    # Instalar agente y herramientas adicionales
+    dnf install -y zabbix-agent zabbix-get zabbix-sender >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   debian)
-    apt-get install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
+    apt-get install -y zabbix-agent zabbix-get zabbix-sender >>/tmp/zabbix_agent_install.log 2>&1
     ;;
   suse)
     zypper install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
@@ -350,29 +359,66 @@ install_agent() {
       exit 1
     fi
   fi
+
+  # Verificar herramientas adicionales
+  if command -v zabbix_get &>/dev/null; then
+    log_info "zabbix_get instalado"
+  else
+    log_warn "zabbix_get no disponible, se puede instalar manualmente"
+  fi
+
+  if command -v zabbix_sender &>/dev/null; then
+    log_info "zabbix_sender instalado"
+  else
+    log_warn "zabbix_sender no disponible"
+  fi
+}
+
+configure_permissions() {
+  log_step "Configurando permisos de directorios y archivos..."
+
+  # Crear directorios necesarios
+  mkdir -p /etc/zabbix/ssl
+  mkdir -p /var/log/zabbix
+  mkdir -p /run/zabbix
+
+  # Establecer propietario y permisos recursivos para /etc/zabbix
+  chown -R zabbix:zabbix /etc/zabbix
+  chmod 755 /etc/zabbix
+  chmod 750 /etc/zabbix/ssl 2>/dev/null || chmod 755 /etc/zabbix/ssl
+  chmod 755 /var/log/zabbix
+  chmod 755 /run/zabbix
+
+  log_info "Permisos configurados correctamente"
 }
 
 generate_psk() {
   log_step "Generando PSK para TLS..."
+
+  # Asegurar directorio SSL con permisos correctos
   mkdir -p /etc/zabbix/ssl
+  chown -R zabbix:zabbix /etc/zabbix/ssl
+  chmod 750 /etc/zabbix/ssl
+
   PSK_KEY=$(openssl rand -hex 32)
   PSK_IDENTITY="${HOSTNAME}_psk_$(date +%s)"
+
   echo -n "$PSK_KEY" >/etc/zabbix/ssl/psk.key
-  chown -R zabbix:zabbix /etc/zabbix/ssl
-  chmod 600 /etc/zabbix/ssl/psk.key
+
+  # Permisos específicos para el archivo PSK
+  chown zabbix:zabbix /etc/zabbix/ssl/psk.key
+  chmod 640 /etc/zabbix/ssl/psk.key
+
   log_info "PSK generado: $PSK_IDENTITY"
+  log_debug "PSK Key: $PSK_KEY"
 }
 
 configure_agent() {
   log_step "Configurando Zabbix Agent..."
 
-  # Si no existe el archivo de configuración (instalación desde binario), crearlo
-  if [ ! -f /etc/zabbix/zabbix_agentd.conf ]; then
-    touch /etc/zabbix/zabbix_agentd.conf
-  fi
-
+  # Crear configuración limpia
   cat >/etc/zabbix/zabbix_agentd.conf <<EOF
-Server=${ZABBIX_SERVER}
+Server=127.0.0.1,${ZABBIX_SERVER}
 ServerActive=${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
 Hostname=${HOSTNAME}
 ListenPort=${ZABBIX_AGENT_PORT}
@@ -390,9 +436,12 @@ TLSPSKIdentity=${PSK_IDENTITY}
 TLSPSKFile=/etc/zabbix/ssl/psk.key
 EOF
 
-  chown root:zabbix /etc/zabbix/zabbix_agentd.conf 2>/dev/null || true
-  chmod 640 /etc/zabbix/zabbix_agentd.conf 2>/dev/null || true
+  # Permisos del archivo de configuración
+  chown root:zabbix /etc/zabbix/zabbix_agentd.conf
+  chmod 640 /etc/zabbix/zabbix_agentd.conf
+
   log_info "Agente configurado con TLS/PSK"
+  log_info "Servidores permitidos: 127.0.0.1, ${ZABBIX_SERVER}"
 }
 
 configure_firewall() {
@@ -477,29 +526,56 @@ EOF
 start_agent() {
   log_step "Iniciando servicio del agente..."
 
-  # Si es instalación desde binario, usar servicio systemd
-  if [ -f /etc/systemd/system/zabbix-agent.service ]; then
+  # Asegurar que el servicio systemd existe (RPM lo crea, binario lo necesita)
+  if [ ! -f /usr/lib/systemd/system/zabbix-agent.service ] && [ ! -f /etc/systemd/system/zabbix-agent.service ]; then
+    log_warn "Servicio systemd no encontrado, creando..."
+    cat >/etc/systemd/system/zabbix-agent.service <<'EOF'
+[Unit]
+Description=Zabbix Agent
+After=network.target
+
+[Service]
+Type=simple
+User=zabbix
+Group=zabbix
+ExecStart=/usr/sbin/zabbix_agentd -f -c /etc/zabbix/zabbix_agentd.conf
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
     systemctl daemon-reload
-    systemctl enable zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
-    systemctl restart zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
-  else
-    systemctl enable "$AGENT_SERVICE" >>/tmp/zabbix_agent_install.log 2>&1
-    systemctl restart "$AGENT_SERVICE" >>/tmp/zabbix_agent_install.log 2>&1
   fi
 
-  sleep 2
+  # Habilitar e iniciar
+  systemctl enable zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
+  systemctl restart zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1
 
-  if pgrep -f "zabbix_agentd" >/dev/null; then
+  sleep 3
+
+  if systemctl is-active zabbix-agent &>/dev/null; then
     log_info "Agente iniciado correctamente"
   else
     log_error "Error al iniciar agente"
-    # Intentar iniciar manualmente
-    /usr/sbin/zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf
-    if [ $? -eq 0 ]; then
-      log_info "Agente iniciado manualmente"
+    journalctl -u zabbix-agent -n 10 --no-pager
+    exit 1
+  fi
+}
+
+test_local_connection() {
+  log_step "Probando conexión local al agente..."
+
+  if command -v zabbix_get &>/dev/null; then
+    local RESULT=$(zabbix_get -s 127.0.0.1 -p ${ZABBIX_AGENT_PORT} -k system.hostname 2>/dev/null)
+    if [ "$RESULT" = "${HOSTNAME}" ]; then
+      log_info "Conexión local exitosa: $RESULT"
     else
-      exit 1
+      log_warn "Conexión local falló: $RESULT"
     fi
+  else
+    log_warn "zabbix_get no disponible para probar conexión local"
   fi
 }
 
@@ -520,7 +596,7 @@ Servidor: ${ZABBIX_SERVER}
   Archivo: /etc/zabbix/ssl/psk.key
 
 📋 Comandos útiles:
-  systemctl status ${AGENT_SERVICE}
+  systemctl status zabbix-agent
   tail -f /var/log/zabbix/zabbix_agentd.log
   zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname
 
@@ -528,16 +604,6 @@ Servidor: ${ZABBIX_SERVER}
 EOF
   chmod 600 "$CRED_FILE"
   log_info "Credenciales guardadas: $CRED_FILE"
-}
-
-verify_connection() {
-  log_step "Verificando conexión TLS desde el servidor..."
-  echo -n "${PSK_KEY}" >/tmp/psk_test.key
-  log_info "Desde el servidor Zabbix, ejecute:"
-  echo -e "${YELLOW}  zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname \\"
-  echo -e "    --tls-connect psk \\"
-  echo -e "    --tls-psk-identity \"${PSK_IDENTITY}\" \\"
-  echo -e "    --tls-psk-file /tmp/psk_test.key${NC}"
 }
 
 show_completion() {
@@ -549,6 +615,9 @@ show_completion() {
   echo -e "  • IP: ${GREEN}${AGENT_IP}${NC}"
   echo -e "  • Servidor: ${GREEN}${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}${NC}"
   echo -e "  • TLS/PSK: ${GREEN}Habilitado${NC}"
+  echo -e "\n${YELLOW}📋 VERIFICACIÓN:${NC}"
+  echo -e "  systemctl status zabbix-agent"
+  echo -e "  zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname"
   echo -e "\n${GREEN}============================================${NC}\n"
 }
 
@@ -658,12 +727,13 @@ install_dependencies
 disable_epel_conflict
 install_zabbix_repo
 install_agent
+configure_permissions
 generate_psk
 configure_agent
 configure_firewall
 test_api_connection
 register_host
 start_agent
+test_local_connection
 save_credentials
-verify_connection
 show_completion
