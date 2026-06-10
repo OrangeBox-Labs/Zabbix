@@ -7,7 +7,7 @@
 # Email: froman@orangebox.cl
 # Descripcion: Instalacion de Zabbix Server 7.4 en AlmaLinux 10
 #              con MySQL/MariaDB, Apache y SELinux
-#              Genera passwords aleatorios y crea archivo de credenciales
+#              Incluye hardening de MySQL y tuning para ~200 servidores
 # ==============================================
 
 RED='\033[0;31m'
@@ -18,16 +18,23 @@ NC='\033[0m'
 
 # Variables configurables
 ZABBIX_VERSION="7.4"
-INSTALL_TYPE="server" # server o agent
+INSTALL_TYPE="server"
+MYSQL_TUNING=true
 
-# Archivo de credenciales
+# Variables estimadas para Zabbix con 200 servidores
+# Aprox 200 servidores x 30 items x 60 segundos de intervalo = 6000 valores por segundo
+EXPECTED_HOSTS=200
+EXPECTED_ITEMS=30
+EXPECTED_VALUES_PER_SECOND=6000
+
+# Archivos de log y credenciales
 CREDENTIALS_FILE="/root/zabbix_credentials_$(date +%Y%m%d_%H%M%S).txt"
 LOG_FILE="/root/zabbix_install_$(date +%Y%m%d_%H%M%S).log"
 
 # Variables que se llenaran durante la ejecucion
 DB_PASSWORD=""
-ZBX_PASSWORD=""
 MYSQL_ROOT_PASSWORD=""
+MYSQL_ALREADY_INSTALLED=false
 
 # ==============================================
 # FUNCIONES
@@ -36,15 +43,16 @@ MYSQL_ROOT_PASSWORD=""
 show_usage() {
   echo -e "${GREEN}USO:${NC}"
   echo "  $0                                    - Instalacion interactiva"
-  echo "  $0 --auto                             - Instalacion automatica (genera passwords aleatorios)"
+  echo "  $0 --auto                             - Instalacion automatica"
   echo "  $0 --agent                            - Instalar solo Zabbix Agent"
+  echo "  $0 --no-tune                          - No aplicar tuning a MySQL"
   echo "  $0 --help                             - Mostrar esta ayuda"
   echo ""
   echo -e "${GREEN}EJEMPLOS:${NC}"
   echo "  # Instalacion interactiva"
   echo "  ./install-zabbix-server.sh"
   echo ""
-  echo "  # Instalacion automatica con passwords aleatorios"
+  echo "  # Instalacion automatica"
   echo "  ./install-zabbix-server.sh --auto"
   echo ""
   echo "  # Instalar solo el agente"
@@ -69,7 +77,7 @@ log_step() {
 }
 
 generate_password() {
-  local length=${1:-20}
+  local length=${1:-24}
   tr -dc 'A-Za-z0-9!?@#%$&*' </dev/urandom 2>/dev/null | head -c "$length"
 }
 
@@ -134,10 +142,207 @@ init_log() {
   log_info "Log de instalacion: $LOG_FILE"
 }
 
+check_mysql_installed() {
+  log_step "Verificando instalacion de MySQL/MariaDB..."
+
+  if command -v mysql &>/dev/null; then
+    MYSQL_ALREADY_INSTALLED=true
+    log_info "MySQL/MariaDB ya esta instalado"
+
+    # Verificar si podemos conectar como root
+    if mysql -uroot -e "SELECT 1" &>/dev/null; then
+      log_info "MySQL/MariaDB esta accesible (sin password)"
+    elif [ -f /root/.my.cnf ] && mysql --defaults-file=/root/.my.cnf -e "SELECT 1" &>/dev/null; then
+      log_info "MySQL/MariaDB esta accesible (con archivo de configuracion)"
+    else
+      log_warn "MySQL/MariaDB instalado pero no se puede acceder como root"
+    fi
+  else
+    MYSQL_ALREADY_INSTALLED=false
+    log_info "MySQL/MariaDB no instalado, se procedera con la instalacion"
+  fi
+}
+
+install_mariadb() {
+  if [ "$MYSQL_ALREADY_INSTALLED" = true ]; then
+    log_info "Saltando instalacion de MariaDB (ya existe)"
+    return 0
+  fi
+
+  log_step "Instalando MariaDB..."
+  dnf install mariadb-server mariadb -y >>"$LOG_FILE" 2>&1
+  systemctl enable --now mariadb >>"$LOG_FILE" 2>&1
+  log_info "MariaDB instalado y en ejecucion"
+}
+
+secure_mariadb() {
+  log_step "Aplicando hardening a MySQL/MariaDB..."
+
+  # Crear archivo temporal con comandos de seguridad
+  local SECURE_SQL="/tmp/mysql_secure_$(date +%s).sql"
+
+  cat >"$SECURE_SQL" <<EOF
+-- Eliminar usuarios anonimos
+DELETE FROM mysql.user WHERE User='';
+
+-- Eliminar base de datos test
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+
+-- Eliminar acceso remoto para root
+DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+
+-- Limitar usuarios
+FLUSH PRIVILEGES;
+EOF
+
+  # Ejecutar comandos de seguridad
+  if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
+    mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" <"$SECURE_SQL" >>"$LOG_FILE" 2>&1
+  else
+    mysql -uroot <"$SECURE_SQL" >>"$LOG_FILE" 2>&1
+  fi
+
+  rm -f "$SECURE_SQL"
+
+  log_info "Hardening de MySQL aplicado: usuarios anonimos eliminados, DB test eliminada, acceso remoto deshabilitado"
+}
+
+setup_mysql_root_password() {
+  log_step "Configurando password de root de MySQL..."
+
+  if [ "$MYSQL_ALREADY_INSTALLED" = true ]; then
+    # Cambiar password existente
+    if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
+      mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1 2>/dev/null ||
+        mysql -uroot -p"${OLD_MYSQL_ROOT_PASSWORD}" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';" >>"$LOG_FILE" 2>&1
+    fi
+  else
+    # Configurar password por primera vez
+    mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1
+  fi
+
+  # Crear archivo de configuracion para mysql client
+  cat >/root/.my.cnf <<EOF
+[client]
+user=root
+password=${MYSQL_ROOT_PASSWORD}
+EOF
+  chmod 600 /root/.my.cnf
+
+  log_info "Password de root de MySQL configurado"
+}
+
+configure_mysql_tuning() {
+  if [ "$MYSQL_TUNING" = false ]; then
+    log_info "Tuning de MySQL omitido por peticion del usuario"
+    return 0
+  fi
+
+  log_step "Aplicando tuning de MySQL para ~${EXPECTED_HOSTS} servidores..."
+
+  local MYSQL_TUNING_FILE="/etc/my.cnf.d/zabbix-tuning.cnf"
+  local MYSQL_VERSION=$(mysql --version | grep -oP 'Ver \K[0-9.]+' | cut -d. -f1)
+
+  # Calcular valores optimos para ~200 servidores Zabbix
+  # InnoDB: Los datos de Zabbix crecen ~1GB por 100 hosts por mes (aprox)
+  local INNODB_BUFFER_POOL_SIZE="2G" # 25% de RAM si hay 8GB, ajustar
+  local INNODB_LOG_FILE_SIZE="512M"
+  local INNODB_LOG_BUFFER_SIZE="64M"
+  local INNODB_FLUSH_LOG_AT_TRX_COMMIT="2" # Mejor performance para Zabbix
+
+  # Calcular RAM disponible
+  local TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
+  if [ "$TOTAL_RAM" -ge 16 ]; then
+    INNODB_BUFFER_POOL_SIZE="4G"
+    INNODB_LOG_FILE_SIZE="1G"
+  elif [ "$TOTAL_RAM" -ge 8 ]; then
+    INNODB_BUFFER_POOL_SIZE="2G"
+    INNODB_LOG_FILE_SIZE="512M"
+  else
+    INNODB_BUFFER_POOL_SIZE="1G"
+    INNODB_LOG_FILE_SIZE="256M"
+  fi
+
+  cat >"$MYSQL_TUNING_FILE" <<EOF
+# ==============================================
+# Zabbix MySQL Tuning - Optimizado para ${EXPECTED_HOSTS} servidores
+# Generado: $(date)
+# ==============================================
+[mysqld]
+
+# --- Configuracion basica ---
+max_connections = 500
+max_connect_errors = 1000000
+thread_cache_size = 128
+table_open_cache = 4000
+table_definition_cache = 4000
+
+# --- InnoDB (motor usado por Zabbix) ---
+default_storage_engine = InnoDB
+innodb_buffer_pool_size = ${INNODB_BUFFER_POOL_SIZE}
+innodb_log_file_size = ${INNODB_LOG_FILE_SIZE}
+innodb_log_buffer_size = ${INNODB_LOG_BUFFER_SIZE}
+innodb_flush_log_at_trx_commit = ${INNODB_FLUSH_LOG_AT_TRX_COMMIT}
+innodb_flush_method = O_DIRECT
+innodb_file_per_table = 1
+innodb_read_io_threads = 16
+innodb_write_io_threads = 16
+innodb_io_capacity = 2000
+innodb_io_capacity_max = 4000
+innodb_buffer_pool_instances = 4
+innodb_lock_wait_timeout = 50
+innodb_print_all_deadlocks = 1
+
+# --- Query cache (deshabilitado en MySQL 8+) ---
+$([ "$MYSQL_VERSION" -lt 8 ] && echo "query_cache_size = 0" || echo "# query_cache_size = 0 (no aplica en MySQL 8+)")
+$([ "$MYSQL_VERSION" -lt 8 ] && echo "query_cache_type = 0" || echo "# query_cache_type = 0")
+
+# --- Timeouts y limites ---
+connect_timeout = 30
+wait_timeout = 600
+interactive_timeout = 600
+tmp_table_size = 64M
+max_heap_table_size = 64M
+
+# --- Sorting y temporales ---
+sort_buffer_size = 2M
+join_buffer_size = 2M
+read_buffer_size = 1M
+read_rnd_buffer_size = 4M
+
+# --- Logging (minimo para Zabbix) ---
+slow_query_log = 1
+slow_query_log_file = /var/log/mariadb/slow-queries.log
+long_query_time = 2
+log_queries_not_using_indexes = 1
+
+# --- Binlog (si aplica) ---
+expire_logs_days = 7
+max_binlog_size = 100M
+
+# --- Zabbix especifico ---
+# Optimizaciones para el esquema de Zabbix
+innodb_strict_mode = ON
+sql_mode = "NO_ENGINE_SUBSTITUTION"
+
+# --- Caracteres ---
+character_set_server = utf8mb4
+collation_server = utf8mb4_bin
+
+# --- Performance adicional ---
+performance_schema = ON
+max_allowed_packet = 16M
+EOF
+
+  # Reiniciar MariaDB para aplicar cambios
+  systemctl restart mariadb >>"$LOG_FILE" 2>&1
+  log_info "Tuning de MySQL aplicado: buffer_pool=${INNODB_BUFFER_POOL_SIZE}, log_file=${INNODB_LOG_FILE_SIZE}, max_connections=500"
+}
+
 setup_passwords() {
   log_step "Configurando passwords..."
 
-  # Generar passwords aleatorias
   local random_db_pass=$(generate_password 24)
   local random_mysql_root_pass=$(generate_password 24)
 
@@ -157,34 +362,9 @@ setup_passwords() {
   fi
 }
 
-install_mariadb() {
-  log_step "Instalando MariaDB..."
-  dnf install mariadb-server mariadb -y >>"$LOG_FILE" 2>&1
-  systemctl enable --now mariadb >>"$LOG_FILE" 2>&1
-  log_info "MariaDB instalado y en ejecucion"
-}
-
-secure_mariadb() {
-  log_step "Configurando password de root de MariaDB..."
-
-  # Configurar password de root
-  mysqladmin -u root password "$MYSQL_ROOT_PASSWORD" >>"$LOG_FILE" 2>&1
-
-  # Crear archivo de configuracion para mysql client
-  cat >/root/.my.cnf <<EOF
-[client]
-user=root
-password=${MYSQL_ROOT_PASSWORD}
-EOF
-  chmod 600 /root/.my.cnf
-
-  log_info "Password de root de MariaDB configurado"
-}
-
 configure_repository() {
   log_step "Configurando repositorio de Zabbix..."
 
-  # Excluir zabbix de EPEL si existe
   if [ -f /etc/yum.repos.d/epel.repo ]; then
     if ! grep -q "excludepkgs=zabbix" /etc/yum.repos.d/epel.repo; then
       echo "excludepkgs=zabbix*" >>/etc/yum.repos.d/epel.repo
@@ -192,7 +372,6 @@ configure_repository() {
     fi
   fi
 
-  # Instalar repositorio de Zabbix
   rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm >>"$LOG_FILE" 2>&1
   dnf clean all >>"$LOG_FILE" 2>&1
   log_info "Repositorio de Zabbix configurado"
@@ -237,15 +416,25 @@ EOF
 configure_server() {
   log_step "Configurando Zabbix Server..."
 
-  # Configurar password de base de datos
   sed -i "s/^# DBPassword=.*/DBPassword=${DB_PASSWORD}/" /etc/zabbix/zabbix_server.conf
   sed -i "s/^DBPassword=.*/DBPassword=${DB_PASSWORD}/" /etc/zabbix/zabbix_server.conf
 
-  # Configurar PHP timezone
+  # Ajustes adicionales para rendimiento con 200 servidores
+  sed -i "s/^# StartPollers=.*/StartPollers=40/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# StartPollersUnreachable=.*/StartPollersUnreachable=10/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# StartTrappers=.*/StartTrappers=20/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# StartPingers=.*/StartPingers=5/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# StartDiscoverers=.*/StartDiscoverers=5/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# CacheSize=.*/CacheSize=256M/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# HistoryCacheSize=.*/HistoryCacheSize=128M/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# TrendCacheSize=.*/TrendCacheSize=64M/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# ValueCacheSize=.*/ValueCacheSize=128M/" /etc/zabbix/zabbix_server.conf
+  sed -i "s/^# Timeout=.*/Timeout=10/" /etc/zabbix/zabbix_server.conf
+
   sed -i "s/^; php_value date.timezone Europe\/Riga/php_value date.timezone America\/Santiago/" /etc/httpd/conf.d/zabbix.conf
   sed -i "s/^# php_value date.timezone Europe\/Riga/php_value date.timezone America\/Santiago/" /etc/httpd/conf.d/zabbix.conf
 
-  log_info "Zabbix Server configurado"
+  log_info "Zabbix Server configurado (pollers=40, trappers=20, cache=256M)"
 }
 
 configure_agent() {
@@ -275,9 +464,23 @@ configure_firewall() {
     firewall-cmd --permanent --add-service=http >>"$LOG_FILE" 2>&1
     firewall-cmd --permanent --add-port=10050/tcp >>"$LOG_FILE" 2>&1
     firewall-cmd --reload >>"$LOG_FILE" 2>&1
-    log_info "Firewall configurado"
+    log_info "Firewall configurado (http, 10050/tcp)"
   else
     log_warn "firewalld no instalado, omitiendo configuracion"
+  fi
+}
+
+verify_mysql_tuning() {
+  log_step "Verificando configuracion de MySQL..."
+
+  local buffer_pool=$(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size';" 2>/dev/null | awk 'NR==2 {print $2}')
+  local max_conn=$(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'max_connections';" 2>/dev/null | awk 'NR==2 {print $2}')
+
+  if [ -n "$buffer_pool" ]; then
+    log_info "InnoDB Buffer Pool: $buffer_pool bytes"
+  fi
+  if [ -n "$max_conn" ]; then
+    log_info "Max Connections: $max_conn"
   fi
 }
 
@@ -305,14 +508,32 @@ create_credentials_file() {
   Password Zabbix DB: ${DB_PASSWORD}
   Base de datos: zabbix
 
+⚙️ CONFIGURACION DE RENDIMIENTO:
+  Servidores esperados: ${EXPECTED_HOSTS}
+  Items por servidor: ${EXPECTED_ITEMS}
+  Valores por segundo: ~${EXPECTED_VALUES_PER_SECOND}
+  
+  MySQL Tuning:
+    - InnoDB Buffer Pool: $(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size';" 2>/dev/null | awk 'NR==2 {print $2}' || echo "N/A")
+    - Max Connections: $(mysql --defaults-file=/root/.my.cnf -e "SHOW VARIABLES LIKE 'max_connections';" 2>/dev/null | awk 'NR==2 {print $2}' || echo "N/A")
+  
+  Zabbix Server Tuning:
+    - StartPollers: 40
+    - StartTrappers: 20
+    - CacheSize: 256M
+    - HistoryCacheSize: 128M
+
 📁 ARCHIVOS DE CONFIGURACION:
   Zabbix Server: /etc/zabbix/zabbix_server.conf
   Zabbix Agent: /etc/zabbix/zabbix_agentd.conf
+  MySQL Tuning: /etc/my.cnf.d/zabbix-tuning.cnf
   Apache: /etc/httpd/conf.d/zabbix.conf
 
 📋 LOGS:
   Zabbix Server: /var/log/zabbix/zabbix_server.log
   Zabbix Agent: /var/log/zabbix/zabbix_agentd.log
+  MySQL: /var/log/mariadb/mariadb.log
+  Slow Queries: /var/log/mariadb/slow-queries.log
   Instalacion: ${LOG_FILE}
 
 =============================================
@@ -320,15 +541,29 @@ create_credentials_file() {
 =============================================
 
 # Estado de servicios
-systemctl status zabbix-server zabbix-agent httpd php-fpm
+systemctl status zabbix-server zabbix-agent httpd php-fpm mariadb
 
 # Ver logs
 tail -f /var/log/zabbix/zabbix_server.log
-tail -f /var/log/zabbix/zabbix_agentd.log
+tail -f /var/log/mariadb/slow-queries.log
 
 # Conectar a MySQL
-mysql -uroot -p'${MYSQL_ROOT_PASSWORD}'
+mysql --defaults-file=/root/.my.cnf
 mysql -uzabbix -p'${DB_PASSWORD}' zabbix
+
+# Monitorear performance
+mysqladmin --defaults-file=/root/.my.cnf status
+mysql --defaults-file=/root/.my.cnf -e "SHOW ENGINE INNODB STATUS\G"
+
+=============================================
+  ⚠️  RECOMENDACIONES POST-INSTALACION
+=============================================
+
+1. Cambiar password del usuario Admin en Zabbix Web
+2. Configurar backups automaticos de la base de datos
+3. Monitorear el tamaño de la DB: du -sh /var/lib/mysql/zabbix
+4. Revisar logs de slow queries para optimizar
+5. Configurar particion separada para /var/lib/mysql si es posible
 
 =============================================
   🌐 https://www.orangebox.cl
@@ -354,8 +589,6 @@ show_completion() {
   echo -e "  ${CREDENTIALS_FILE}" | tee -a "$LOG_FILE"
   echo -e "\n${YELLOW}LOG DE INSTALACION:${NC}" | tee -a "$LOG_FILE"
   echo -e "  ${LOG_FILE}" | tee -a "$LOG_FILE"
-  echo -e "\n${RED}⚠️  IMPORTANTE: Guarde el archivo de credenciales en un lugar seguro${NC}" | tee -a "$LOG_FILE"
-  echo -e "${RED}   Luego elimine el archivo del servidor si no es necesario mantenerlo${NC}" | tee -a "$LOG_FILE"
   echo -e "\n${GREEN}============================================${NC}" | tee -a "$LOG_FILE"
   echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}" | tee -a "$LOG_FILE"
   echo -e "${GREEN}============================================${NC}\n" | tee -a "$LOG_FILE"
@@ -379,6 +612,10 @@ while [[ $# -gt 0 ]]; do
     INSTALL_TYPE="agent"
     shift
     ;;
+  --no-tune)
+    MYSQL_TUNING=false
+    shift
+    ;;
   --help | -h)
     show_usage
     exit 0
@@ -399,6 +636,7 @@ clear
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Instalador de Zabbix Server 7.4${NC}"
 echo -e "${GREEN}  para AlmaLinux 10${NC}"
+echo -e "${GREEN}  Optimizado para ~200 servidores${NC}"
 echo -e "${GREEN}============================================${NC}\n"
 
 check_root
@@ -406,15 +644,16 @@ detect_os
 init_log
 
 if [ "$AGENT_ONLY" = false ]; then
+  check_mysql_installed
   setup_passwords
 fi
 
 if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ]; then
   echo -e "${YELLOW}Este script instalara Zabbix Server 7.4 con:${NC}"
-  echo -e "  • MariaDB (MySQL)"
+  echo -e "  • MariaDB con hardening y tuning (buffer_pool: 2-4GB, max_connections: 500)"
   echo -e "  • Apache Web Server"
   echo -e "  • PHP-FPM"
-  echo -e "  • Zabbix Server"
+  echo -e "  • Zabbix Server (configurado para ~200 servidores)"
   echo -e "  • Zabbix Agent"
   echo -e "  • SELinux Policy"
   echo -e "\n${YELLOW}¿Desea continuar? (s/N): ${NC}"
@@ -426,7 +665,6 @@ if [ "$AUTO_MODE" = false ] && [ "$AGENT_ONLY" = false ]; then
 fi
 
 if [ "$AGENT_ONLY" = true ]; then
-  # Instalacion solo agente
   configure_repository
   install_agent_only
   configure_agent
@@ -436,9 +674,10 @@ if [ "$AGENT_ONLY" = true ]; then
   echo -e "Configuracion en: /etc/zabbix/zabbix_agentd.conf"
   echo -e "Log de instalacion: $LOG_FILE"
 else
-  # Instalacion completa
   install_mariadb
+  setup_mysql_root_password
   secure_mariadb
+  configure_mysql_tuning
   configure_repository
   install_server
   create_database
@@ -446,6 +685,7 @@ else
   configure_agent
   start_services
   configure_firewall
+  verify_mysql_tuning
   create_credentials_file
   show_completion
 fi
