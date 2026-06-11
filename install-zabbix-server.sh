@@ -624,7 +624,7 @@ configure_repository() {
 
 install_server() {
   log_step "Instalando Zabbix Server, frontend y agente..."
-  dnf install -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent zabbix-get >>"$LOG_FILE" 2>&1
+  dnf install -y zabbix-server-mysql zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent zabbix-get openssl >>"$LOG_FILE" 2>&1
   log_info "Paquetes de Zabbix instalados"
 }
 
