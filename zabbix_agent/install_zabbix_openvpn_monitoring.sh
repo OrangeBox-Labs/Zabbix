@@ -2,13 +2,10 @@
 # ============================================================
 # Script: install_zabbix_openvpn_monitoring.sh
 # Descripción: Instala monitoreo de certificados OpenVPN para Zabbix
-#              CON DETECCIÓN Y REEMPLAZO DE CONFIGURACIÓN PREVIA
-#              Versión mejorada con detalle por certificado
-# ============================================================
+#              CON LLD (Low Level Discovery)
 # Autor: OrangeBox - Área de Infraestructura
 # Web: https://orangebox.cl
-# Fecha: $(date '+%Y-%m-%d')
-# Versión: 2.0
+# Versión: 3.0 - LLD
 # ============================================================
 
 set -e
@@ -21,239 +18,29 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Variables
-SCRIPT_NAME="check_openvpn_certs_zabbix.sh"
-SCRIPT_PATH="/usr/local/bin/${SCRIPT_NAME}"
 ZABBIX_CONF_DIR="/etc/zabbix/zabbix_agent2.d"
 ZABBIX_CONF_FILE="${ZABBIX_CONF_DIR}/openvpn_certs.conf"
 ZABBIX_USER="zabbix"
 GROUP_NAME="zabbix-openvpn"
-LOG_FILE="/var/log/zabbix_openvpn_install.log"
-INSTALLED_FLAG="/etc/zabbix/.openvpn_monitoring_installed"
 
-# Logo de OrangeBox
-show_banner() {
-  echo ""
-  echo "============================================================"
-  echo "   ██████╗ ██████╗  █████╗ ███╗   ██╗ ██████╗ ███████╗"
-  echo "  ██╔═══██╗██╔══██╗██╔══██╗████╗  ██║██╔════╝ ██╔════╝"
-  echo "  ██║   ██║██████╔╝███████║██╔██╗ ██║██║  ███╗█████╗  "
-  echo "  ██║   ██║██╔══██╗██╔══██║██║╚██╗██║██║   ██║██╔══╝  "
-  echo "  ╚██████╔╝██║  ██║██║  ██║██║ ╚████║╚██████╔╝███████╗"
-  echo "   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝"
-  echo "============================================================"
-  echo "     MONITOREO OPENVPN CERTIFICADOS - ZABBIX"
-  echo "                OrangeBox.cl | Infraestructura"
-  echo "============================================================"
-  echo ""
-}
-
-# Funciones
-log() {
-  echo -e "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
-}
-
-log_success() {
-  echo -e "${GREEN}✓ $1${NC}" | tee -a "$LOG_FILE"
-}
-
-log_error() {
-  echo -e "${RED}✗ ERROR: $1${NC}" | tee -a "$LOG_FILE"
-  exit 1
-}
-
-log_info() {
-  echo -e "${BLUE}ℹ $1${NC}" | tee -a "$LOG_FILE"
-}
-
-log_warning() {
-  echo -e "${YELLOW}⚠ $1${NC}" | tee -a "$LOG_FILE"
-}
-
-# Verificar si ya está instalado
-check_existing_installation() {
-  log_info "Verificando si ya existe monitoreo OpenVPN..."
-
-  INSTALLED=false
-  OLD_CONFIGS_FOUND=false
-
-  # Verificar flag de instalación
-  if [ -f "$INSTALLED_FLAG" ]; then
-    log_warning "Se encontró flag de instalación previa"
-    INSTALLED=true
-  fi
-
-  # Verificar si el script existe
-  if [ -f "$SCRIPT_PATH" ]; then
-    log_warning "El script $SCRIPT_NAME ya existe"
-    INSTALLED=true
-  fi
-
-  # Verificar si hay configuraciones antiguas de OpenVPN
-  if ls ${ZABBIX_CONF_DIR}/*openvpn*.conf 2>/dev/null | grep -v "openvpn_certs.conf" >/dev/null 2>&1; then
-    log_warning "Se encontraron configuraciones antiguas de OpenVPN"
-    OLD_CONFIGS_FOUND=true
-    INSTALLED=true
-  fi
-
-  # Verificar UserParameters antiguos
-  if grep -r "openvpn.certs" "$ZABBIX_CONF_DIR" 2>/dev/null | grep -q "UserParameter"; then
-    log_warning "Ya existen UserParameters de OpenVPN configurados"
-    INSTALLED=true
-  fi
-
-  # Si ya está instalado, preguntar qué hacer
-  if [ "$INSTALLED" = true ]; then
-    echo ""
-    log_warning "=========================================="
-    log_warning "MONITOREO OPENVPN YA ESTÁ INSTALADO"
-    log_warning "=========================================="
-    echo ""
-    echo "Opciones:"
-    echo "  1) Reinstalar (eliminar configuraciones antiguas y reinstalar)"
-    echo "  2) Solo actualizar script"
-    echo "  3) Verificar estado actual"
-    echo "  4) Desinstalar completamente"
-    echo "  5) Salir"
-    echo ""
-    read -p "Selecciona una opción [1-5]: " OPTION
-
-    case $OPTION in
-    1)
-      log_info "Limpiando configuraciones antiguas y reinstalando..."
-      cleanup_old_config
-      ;;
-    2)
-      log_info "Actualizando script solamente..."
-      update_script_only
-      exit 0
-      ;;
-    3)
-      check_status
-      exit 0
-      ;;
-    4)
-      uninstall_monitoring
-      exit 0
-      ;;
-    5)
-      log_info "Saliendo sin cambios"
-      exit 0
-      ;;
-    *)
-      log_error "Opción inválida"
-      ;;
-    esac
-  else
-    log_success "No se encontró instalación previa. Procediendo con instalación nueva."
-  fi
-}
-
-# Limpiar configuraciones antiguas
-cleanup_old_config() {
-  log_info "Limpiando configuraciones antiguas de OpenVPN..."
-
-  # Eliminar script antiguo
-  rm -f "$SCRIPT_PATH"
-
-  # Eliminar todos los archivos de configuración antiguos de OpenVPN
-  find "$ZABBIX_CONF_DIR" -name "*openvpn*.conf" -type f -exec rm -v {} \; | tee -a "$LOG_FILE"
-
-  # Eliminar flag de instalación
-  rm -f "$INSTALLED_FLAG"
-
-  log_success "Limpieza completada"
-}
-
-# Actualizar solo el script
-update_script_only() {
-  log_info "Actualizando script de monitoreo..."
-  create_monitoring_script
-  log_success "Script actualizado"
-}
-
-# Desinstalar monitoreo
-uninstall_monitoring() {
-  log_warning "Desinstalando monitoreo OpenVPN..."
-
-  read -p "¿Estás seguro? Esto eliminará toda la configuración. (y/N): " CONFIRM
-
-  if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-    # Eliminar script
-    rm -f "$SCRIPT_PATH"
-
-    # Eliminar todos los archivos de configuración de OpenVPN
-    find "$ZABBIX_CONF_DIR" -name "*openvpn*.conf" -type f -exec rm -v {} \;
-
-    # Eliminar flag
-    rm -f "$INSTALLED_FLAG"
-
-    # Remover usuario del grupo
-    if getent group "$GROUP_NAME" >/dev/null; then
-      gpasswd -d "$ZABBIX_USER" "$GROUP_NAME" 2>/dev/null || true
-    fi
-
-    systemctl restart zabbix-agent2
-
-    log_success "Desinstalación completada"
-  else
-    log_info "Desinstalación cancelada"
-  fi
-}
-
-# Verificar estado actual
-check_status() {
-  echo ""
-  echo "=========================================="
-  echo "ESTADO DEL MONITOREO OPENVPN"
-  echo "=========================================="
-
-  echo -e "\n📁 Script:"
-  if [ -f "$SCRIPT_PATH" ]; then
-    echo -e "  ${GREEN}✓ Existe${NC} - $SCRIPT_PATH"
-    echo -e "  Permisos: $(ls -l $SCRIPT_PATH | awk '{print $1}')"
-  else
-    echo -e "  ${RED}✗ No existe${NC}"
-  fi
-
-  echo -e "\n⚙️ UserParameters:"
-  if grep -r "openvpn.certs" "$ZABBIX_CONF_DIR" 2>/dev/null | grep -q "UserParameter"; then
-    echo -e "  ${GREEN}✓ Configurados${NC}"
-    grep -r "openvpn.certs" "$ZABBIX_CONF_DIR" 2>/dev/null | grep "UserParameter" | while read line; do
-      echo "    • $(echo $line | awk -F'=' '{print $1}')"
-    done
-  else
-    echo -e "  ${RED}✗ No configurados${NC}"
-  fi
-
-  echo -e "\n👤 Usuario Zabbix:"
-  if groups "$ZABBIX_USER" 2>/dev/null | grep -q "$GROUP_NAME"; then
-    echo -e "  ${GREEN}✓ Miembro del grupo $GROUP_NAME${NC}"
-  else
-    echo -e "  ${YELLOW}⚠ No es miembro del grupo $GROUP_NAME${NC}"
-  fi
-
-  echo -e "\n🔧 Prueba del script:"
-  if [ -f "$SCRIPT_PATH" ]; then
-    sudo -u "$ZABBIX_USER" "$SCRIPT_PATH" 2>&1 | head -20
-  else
-    echo -e "  ${RED}Script no disponible${NC}"
-  fi
-
-  echo -e "\n📊 Items en Zabbix (desde agente):"
-  for item in openvpn.certs.check openvpn.certs.status openvpn.certs.warning openvpn.certs.critical; do
-    if zabbix_get -s 127.0.0.1 -k "$item" 2>/dev/null >/dev/null; then
-      echo -e "  ${GREEN}✓ $item${NC}"
-    else
-      echo -e "  ${RED}✗ $item${NC}"
-    fi
-  done
-
-  echo "=========================================="
-}
+# Logo
+echo ""
+echo "============================================================"
+echo "   ██████╗ ██████╗  █████╗ ███╗   ██╗ ██████╗ ███████╗"
+echo "  ██╔═══██╗██╔══██╗██╔══██╗████╗  ██║██╔════╝ ██╔════╝"
+echo "  ██║   ██║██████╔╝███████║██╔██╗ ██║██║  ███╗█████╗  "
+echo "  ██║   ██║██╔══██╗██╔══██║██║╚██╗██║██║   ██║██╔══╝  "
+echo "  ╚██████╔╝██║  ██║██║  ██║██║ ╚████║╚██████╔╝███████╗"
+echo "   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝"
+echo "============================================================"
+echo "     MONITOREO OPENVPN CERTIFICADOS - ZABBIX LLD"
+echo "                OrangeBox.cl | Infraestructura"
+echo "============================================================"
+echo ""
 
 # Detectar directorio de certificados
 detect_cert_dir() {
-  log_info "Buscando directorio de certificados OpenVPN..."
+  echo -e "${BLUE}ℹ Buscando directorio de certificados OpenVPN...${NC}"
 
   if [ -d "/etc/openvpn/server/easy-rsa/pki/issued" ] && [ "$(ls -A /etc/openvpn/server/easy-rsa/pki/issued/*.crt 2>/dev/null | wc -l)" -gt 0 ]; then
     CERT_DIR="/etc/openvpn/server/easy-rsa/pki/issued"
@@ -262,25 +49,81 @@ detect_cert_dir() {
   elif [ -d "/etc/openvpn/2.0/keys" ] && [ "$(ls -A /etc/openvpn/2.0/keys/*.crt 2>/dev/null | wc -l)" -gt 0 ]; then
     CERT_DIR="/etc/openvpn/2.0/keys"
   else
-    log_error "No se pudo encontrar el directorio de certificados"
+    echo -e "${RED}✗ ERROR: No se pudo encontrar el directorio de certificados${NC}"
+    exit 1
   fi
 
-  log_success "Directorio encontrado: $CERT_DIR"
+  echo -e "${GREEN}✓ Directorio encontrado: $CERT_DIR${NC}"
 }
 
-# Crear script de monitoreo mejorado
-create_monitoring_script() {
-  log_info "Creando script de monitoreo mejorado..."
+# Crear script de descubrimiento LLD
+create_discovery_script() {
+  echo -e "${BLUE}ℹ Creando script de descubrimiento LLD...${NC}"
 
-  cat >"$SCRIPT_PATH" <<'SCRIPT_EOF'
+  cat >/usr/local/bin/openvpn_cert_discovery.sh <<'EOF'
 #!/bin/bash
-# ============================================================
-# Script: check_openvpn_certs_zabbix.sh
-# Descripción: Monitorea certificados OpenVPN con detalle individual
-# Autor: OrangeBox - Área de Infraestructura
-# Web: https://orangebox.cl
-# ============================================================
+CERT_DIR="__CERT_DIR__"
 
+echo -n '{"data":['
+
+FIRST=1
+for CERT in "$CERT_DIR"/*.crt; do
+    [ -f "$CERT" ] || continue
+    NAME=$(basename "$CERT" .crt)
+    
+    if [ $FIRST -eq 0 ]; then
+        echo -n ","
+    fi
+    
+    echo -n "{\"{#CERTNAME}\":\"$NAME\"}"
+    FIRST=0
+done
+
+echo ']}'
+EOF
+
+  sed -i "s|__CERT_DIR__|$CERT_DIR|g" /usr/local/bin/openvpn_cert_discovery.sh
+  chmod 755 /usr/local/bin/openvpn_cert_discovery.sh
+  echo -e "${GREEN}✓ Script de descubrimiento creado${NC}"
+}
+
+# Crear script de días restantes por certificado
+create_days_script() {
+  echo -e "${BLUE}ℹ Creando script de días restantes...${NC}"
+
+  cat >/usr/local/bin/openvpn_cert_days.sh <<'EOF'
+#!/bin/bash
+CERT="$1"
+CERT_FILE="__CERT_DIR__/${CERT}.crt"
+
+[ -f "$CERT_FILE" ] || { echo "0"; exit 1; }
+
+EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
+
+if [ -z "$EXPIRY_DATE" ]; then
+    echo "0"
+    exit 1
+fi
+
+EXPIRY_EPOCH=$(date -d "$EXPIRY_DATE" +%s 2>/dev/null)
+CURRENT_EPOCH=$(date +%s)
+DIFF_DAYS=$(( (EXPIRY_EPOCH - CURRENT_EPOCH) / 86400 ))
+
+echo "$DIFF_DAYS"
+exit 0
+EOF
+
+  sed -i "s|__CERT_DIR__|$CERT_DIR|g" /usr/local/bin/openvpn_cert_days.sh
+  chmod 755 /usr/local/bin/openvpn_cert_days.sh
+  echo -e "${GREEN}✓ Script de días restantes creado${NC}"
+}
+
+# Crear script de estado global
+create_global_script() {
+  echo -e "${BLUE}ℹ Creando script de estado global...${NC}"
+
+  cat >/usr/local/bin/check_openvpn_certs_zabbix.sh <<'EOF'
+#!/bin/bash
 CERT_DIR="__CERT_DIR__"
 DAYS_WARNING=30
 DAYS_CRITICAL=15
@@ -289,28 +132,11 @@ OUTPUT=""
 WARN_COUNT=0
 CRIT_COUNT=0
 
-if [ ! -d "$CERT_DIR" ]; then
-    echo "CRITICAL - No se encontro el directorio de certificados: $CERT_DIR"
-    exit 2
-fi
-
-CERT_COUNT=$(ls "$CERT_DIR"/*.crt 2>/dev/null | wc -l)
-if [ "$CERT_COUNT" -eq 0 ]; then
-    echo "OK - No hay certificados para monitorear"
-    exit 0
-fi
-
 for CERT in "$CERT_DIR"/*.crt; do
     [ -f "$CERT" ] || continue
-    
     CLIENT_NAME=$(basename "$CERT" .crt)
     EXPIRY_DATE=$(openssl x509 -enddate -noout -in "$CERT" 2>/dev/null | cut -d= -f2)
-    
-    if [ -z "$EXPIRY_DATE" ]; then
-        OUTPUT="${OUTPUT}error: ${CLIENT_NAME} - No se pudo leer certificado\n"
-        continue
-    fi
-    
+    [ -z "$EXPIRY_DATE" ] && continue
     EXPIRY_EPOCH=$(date -d "$EXPIRY_DATE" +%s 2>/dev/null)
     CURRENT_EPOCH=$(date +%s)
     DIFF_DAYS=$(( (EXPIRY_EPOCH - CURRENT_EPOCH) / 86400 ))
@@ -337,105 +163,88 @@ echo "========================================"
 if [ $STATUS -eq 0 ]; then
     echo "ESTADO GLOBAL: OK - Todos los certificados estan vigentes"
 elif [ $STATUS -eq 1 ]; then
-    echo "ESTADO GLOBAL: WARNING - $WARN_COUNT certificado(s) proximos a vencer (menos de $DAYS_WARNING dias)"
-elif [ $STATUS -eq 2 ]; then
-    echo "ESTADO GLOBAL: CRITICAL - $CRIT_COUNT certificado(s) por vencer (menos de $DAYS_CRITICAL dias)"
+    echo "ESTADO GLOBAL: WARNING - $WARN_COUNT certificado(s) proximos a vencer"
+else
+    echo "ESTADO GLOBAL: CRITICAL - $CRIT_COUNT certificado(s) por vencer"
 fi
-
 echo "========================================"
 exit $STATUS
-SCRIPT_EOF
+EOF
 
-  sed -i "s|__CERT_DIR__|$CERT_DIR|g" "$SCRIPT_PATH"
-  chmod +x "$SCRIPT_PATH"
+  sed -i "s|__CERT_DIR__|$CERT_DIR|g" /usr/local/bin/check_openvpn_certs_zabbix.sh
+  chmod 755 /usr/local/bin/check_openvpn_certs_zabbix.sh
+  echo -e "${GREEN}✓ Script de estado global creado${NC}"
+}
 
-  log_success "Script creado: $SCRIPT_PATH"
+# Configurar UserParameters
+setup_zabbix_config() {
+  echo -e "${BLUE}ℹ Configurando UserParameters...${NC}"
+
+  # Eliminar configuraciones antiguas
+  rm -f ${ZABBIX_CONF_DIR}/openvpn*.conf 2>/dev/null
+
+  cat >"$ZABBIX_CONF_FILE" <<'EOF'
+# OpenVPN Certificate Monitoring - OrangeBox
+# LLD Discovery
+UserParameter=openvpn.certs.discovery,/usr/local/bin/openvpn_cert_discovery.sh
+
+# Días restantes por certificado
+UserParameter=openvpn.cert.days[*],/usr/local/bin/openvpn_cert_days.sh "$1"
+
+# Estado global
+UserParameter=openvpn.certs.check,/usr/local/bin/check_openvpn_certs_zabbix.sh
+UserParameter=openvpn.certs.status,/usr/local/bin/check_openvpn_certs_zabbix.sh > /dev/null 2>&1 ; echo $?
+UserParameter=openvpn.certs.warning,/usr/local/bin/check_openvpn_certs_zabbix.sh | grep -q "WARNING:" && echo 1 || echo 0
+UserParameter=openvpn.certs.critical,/usr/local/bin/check_openvpn_certs_zabbix.sh | grep -q "CRITICAL:" && echo 1 || echo 0
+EOF
+
+  chmod 644 "$ZABBIX_CONF_FILE"
+  echo -e "${GREEN}✓ Configuración Zabbix creada${NC}"
 }
 
 # Configurar permisos
 setup_permissions() {
-  log_info "Configurando permisos para usuario $ZABBIX_USER..."
+  echo -e "${BLUE}ℹ Configurando permisos...${NC}"
 
-  # Crear grupo si no existe
-  if ! getent group "$GROUP_NAME" >/dev/null; then
-    groupadd "$GROUP_NAME"
-    log_success "Grupo $GROUP_NAME creado"
-  fi
-
-  # Agregar usuario al grupo
+  groupadd -f "$GROUP_NAME"
   usermod -a -G "$GROUP_NAME" "$ZABBIX_USER"
 
-  # Aplicar permisos
-  OPENVPN_BASE="/etc/openvpn"
-  chgrp -R "$GROUP_NAME" "$OPENVPN_BASE" 2>/dev/null || true
-  find "$OPENVPN_BASE" -type d -exec chmod 750 {} \; 2>/dev/null || true
-  find "$OPENVPN_BASE" -type f \( -name "*.crt" -o -name "*.key" -o -name "*.pem" \) -exec chmod 640 {} \; 2>/dev/null || true
+  chgrp -R "$GROUP_NAME" /etc/openvpn 2>/dev/null || true
+  find /etc/openvpn -type d -exec chmod 750 {} \; 2>/dev/null || true
+  find /etc/openvpn -type f -name "*.crt" -exec chmod 640 {} \; 2>/dev/null || true
 
-  log_success "Permisos configurados"
+  echo -e "${GREEN}✓ Permisos configurados${NC}"
 }
 
-# Configurar Zabbix
-setup_zabbix_config() {
-  log_info "Configurando UserParameters..."
+# Probar scripts
+test_scripts() {
+  echo ""
+  echo -e "${BLUE}ℹ Probando scripts...${NC}"
 
-  # Eliminar archivos antiguos de OpenVPN (ya limpiamos en cleanup)
-  # Crear nuevo archivo de configuración
-  cat >"$ZABBIX_CONF_FILE" <<EOF
-# OpenVPN Certificate Monitoring
-# Instalado: $(date '+%Y-%m-%d %H:%M:%S')
-# Autor: OrangeBox - Infraestructura
-# Web: https://orangebox.cl
+  echo -e "\n${YELLOW}1. Script de descubrimiento LLD:${NC}"
+  sudo -u "$ZABBIX_USER" /usr/local/bin/openvpn_cert_discovery.sh
+  echo ""
 
-# Script principal con detalle de certificados
-UserParameter=openvpn.certs.check,$SCRIPT_PATH
-
-# Código de estado (0=OK, 1=WARNING, 2=CRITICAL)
-UserParameter=openvpn.certs.status,$SCRIPT_PATH > /dev/null 2>&1 ; echo \$?
-
-# Flag de warning (1 si hay certificados en WARNING)
-UserParameter=openvpn.certs.warning,test -n "\$($SCRIPT_PATH | grep 'WARNING:')" && echo 1 || echo 0
-
-# Flag de critical (1 si hay certificados en CRITICAL)
-UserParameter=openvpn.certs.critical,test -n "\$($SCRIPT_PATH | grep 'CRITICAL:')" && echo 1 || echo 0
-EOF
-
-  chmod 644 "$ZABBIX_CONF_FILE"
-  log_success "Configuración creada: $ZABBIX_CONF_FILE"
-}
-
-# Probar instalación
-test_installation() {
-  log_info "Probando instalación..."
-
-  # Probar script
-  if sudo -u "$ZABBIX_USER" "$SCRIPT_PATH" >/dev/null 2>&1; then
-    log_success "Script funciona correctamente"
-  else
-    log_error "Script falla al ejecutarse como $ZABBIX_USER"
+  echo -e "\n${YELLOW}2. Script de días restantes (primer certificado):${NC}"
+  FIRST_CERT=$(sudo -u "$ZABBIX_USER" /usr/local/bin/openvpn_cert_discovery.sh | grep -o '"{#CERTNAME}":"[^"]*"' | head -1 | cut -d'"' -f4)
+  if [ -n "$FIRST_CERT" ]; then
+    sudo -u "$ZABBIX_USER" /usr/local/bin/openvpn_cert_days.sh "$FIRST_CERT"
   fi
-
-  # Mostrar salida
   echo ""
-  log_info "Salida del script:"
-  sudo -u "$ZABBIX_USER" "$SCRIPT_PATH"
+
+  echo -e "\n${YELLOW}3. Script de estado global:${NC}"
+  sudo -u "$ZABBIX_USER" /usr/local/bin/check_openvpn_certs_zabbix.sh
   echo ""
 }
 
-# Crear flag de instalación
-create_install_flag() {
-  cat >"$INSTALLED_FLAG" <<EOF
-Instalado: $(date '+%Y-%m-%d %H:%M:%S')
-Script: $SCRIPT_PATH
-Directorio certificados: $CERT_DIR
-Usuario: $ZABBIX_USER
-Grupo: $GROUP_NAME
-Autor: OrangeBox - Infraestructura
-Version: 2.0
-EOF
-  log_success "Flag de instalación creado"
+# Reiniciar agente
+restart_agent() {
+  echo -e "${BLUE}ℹ Reiniciando Zabbix Agent 2...${NC}"
+  systemctl restart zabbix-agent2
+  echo -e "${GREEN}✓ Zabbix Agent 2 reiniciado${NC}"
 }
 
-# Mostrar resumen final
+# Mostrar resumen
 show_summary() {
   echo ""
   echo "============================================================"
@@ -445,29 +254,16 @@ show_summary() {
   echo -e "👤 Usuario Zabbix: ${BLUE}$ZABBIX_USER${NC}"
   echo -e "👥 Grupo: ${BLUE}$GROUP_NAME${NC}"
   echo ""
-  echo -e "🔧 Comandos útiles:"
-  echo -e "  • Probar script: ${YELLOW}sudo -u $ZABBIX_USER $SCRIPT_PATH${NC}"
-  echo -e "  • Ver estado: ${YELLOW}$0 --status${NC}"
-  echo -e "  • Desinstalar: ${YELLOW}$0 --uninstall${NC}"
+  echo -e "📊 Scripts instalados:"
+  echo -e "  • ${GREEN}/usr/local/bin/openvpn_cert_discovery.sh${NC} - LLD Discovery"
+  echo -e "  • ${GREEN}/usr/local/bin/openvpn_cert_days.sh${NC} - Días por certificado"
+  echo -e "  • ${GREEN}/usr/local/bin/check_openvpn_certs_zabbix.sh${NC} - Estado global"
   echo ""
-  echo -e "📊 Items disponibles en Zabbix:"
-  echo -e "  • ${GREEN}openvpn.certs.check${NC}     - Estado detallado"
-  echo -e "  • ${GREEN}openvpn.certs.status${NC}    - Código (0,1,2)"
-  echo -e "  • ${GREEN}openvpn.certs.warning${NC}   - Flag WARNING"
-  echo -e "  • ${GREEN}openvpn.certs.critical${NC}  - Flag CRITICAL"
-  echo ""
-  echo -e "📋 Ejemplo de salida del script:"
-  echo "========================================"
-  echo "RESUMEN DE CERTIFICADOS OPENVPN"
-  echo "========================================"
-  echo "OK: cliente1 vence en 180 días"
-  echo "WARNING: cliente2 vence en 25 días"
-  echo "CRITICAL: cliente3 vence en 10 días"
-  echo "========================================"
-  echo "ESTADO GLOBAL: CRITICAL - 1 certificado(s) por vencer"
-  echo "========================================"
-  echo ""
-  echo -e "${GREEN}✓ Script listo para usar${NC}"
+  echo -e "📋 Próximos pasos en Zabbix WEB:"
+  echo -e "  1. ${YELLOW}Recopilación de datos → Plantillas${NC}"
+  echo -e "  2. ${YELLOW}Crear plantilla${NC} 'Openvpn certs by OrangeBox'"
+  echo -e "  3. ${YELLOW}Crear regla LLD${NC} con los datos de abajo"
+  echo -e "  4. ${YELLOW}Aplicar plantilla${NC} al host"
   echo "============================================================"
   echo -e "         ${BLUE}OrangeBox.cl - Monitoreo Zabbix${NC}"
   echo "============================================================"
@@ -475,48 +271,15 @@ show_summary() {
 
 # Main
 main() {
-  show_banner
-
-  log "=== Instalación Monitoreo OpenVPN para Zabbix ==="
-
-  case "${1:-}" in
-  --status | -s)
-    check_status
-    exit 0
-    ;;
-  --uninstall | -u)
-    uninstall_monitoring
-    exit 0
-    ;;
-  --help | -h)
-    echo "Uso: $0 [opciones]"
-    echo ""
-    echo "Opciones:"
-    echo "  --status, -s    Ver estado actual del monitoreo"
-    echo "  --uninstall, -u Desinstalar monitoreo completamente"
-    echo "  --help, -h      Mostrar esta ayuda"
-    echo ""
-    echo "Sin opciones: Ejecuta la instalación completa"
-    exit 0
-    ;;
-  esac
-
-  check_existing_installation
   detect_cert_dir
-  create_monitoring_script
-  setup_permissions
+  create_discovery_script
+  create_days_script
+  create_global_script
   setup_zabbix_config
-  test_installation
-  create_install_flag
-
-  # Reiniciar agente
-  log_info "Reiniciando Zabbix Agent 2..."
-  systemctl restart zabbix-agent2
-  log_success "Zabbix Agent 2 reiniciado"
-
+  setup_permissions
+  test_scripts
+  restart_agent
   show_summary
-  log_success "Instalación completada exitosamente"
 }
 
-# Ejecutar main
 main "$@"
