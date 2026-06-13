@@ -384,20 +384,20 @@ install_agent() {
   if [ "$OS_FAMILY" = "centos7" ]; then
     setup_centos7_repos
     if yum install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
-      AGENT_TYPE="zabbix_agentd2"
+      AGENT_TYPE="zabbix_agent2"
       AGENT_SERVICE="zabbix-agent2"
-      AGENT_BINARY="zabbix_agentd2"
-      CONFIG_FILE="/etc/zabbix/zabbix_agentd2.conf"
+      AGENT_BINARY="zabbix_agent2"
+      CONFIG_FILE="/etc/zabbix/zabbix_agent2.conf"
       log_info "Zabbix Agent instalado exitosamente en CentOS 7"
       return 0
     fi
   elif [ "$OS_FAMILY" = "centos8" ]; then
     setup_centos8_repos
     if dnf install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
-      AGENT_TYPE="zabbix_agentd2"
+      AGENT_TYPE="zabbix_agent2"
       AGENT_SERVICE="zabbix-agent2"
-      AGENT_BINARY="zabbix_agentd2"
-      CONFIG_FILE="/etc/zabbix/zabbix_agentd2.conf"
+      AGENT_BINARY="zabbix_agent2"
+      CONFIG_FILE="/etc/zabbix/zabbix_agent2.conf"
       log_info "Zabbix Agent instalado exitosamente en CentOS 8"
       return 0
     fi
@@ -487,7 +487,6 @@ ServerActive=${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
 Hostname=${HOSTNAME}
 ListenPort=${ZABBIX_AGENT_PORT}
 ListenIP=0.0.0.0
-StartAgents=3
 LogFile=/var/log/zabbix/${AGENT_TYPE}.log
 LogFileSize=10
 DebugLevel=3
