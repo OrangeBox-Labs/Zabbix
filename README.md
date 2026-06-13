@@ -20,8 +20,12 @@ Los scripts cubren desde la instalación completa del servidor Zabbix con optimi
 
 | Script | Descripción | Estado |
 |--------|-------------|--------|
-| install-zabbix-server.sh | Instalación completa de Zabbix Server 7.4 con hardening, tuning y locales | Estable |
-| install-zabbix-agent.sh | Instalación y configuración de Zabbix Agent con TLS PSK | Próximamente |
+| install-zabbix-server.sh | Instalación completa de Zabbix Server 7.4 con hardening, tuning y locales | ✅ Estable |
+| install-zabbix-agent2.sh | Instalación y configuración de Zabbix Agent 2 con TLS PSK para servidores Linux | ✅ Estable |
+| install-zabbix-agent-vm.sh | Instalación/Reparación del Agente Zabbix para maquinas virtuales VMware RHEL (7/8/9/10) | ✅ Estable |
+| install_zabbix_openvpn_monitoring.sh | Monitoreo de certificados OpenVPN con LLD (Low Level Discovery) | ✅ Estable |
+
+## 📁 Estructura del Repositorio
 
 
 ## Instalación

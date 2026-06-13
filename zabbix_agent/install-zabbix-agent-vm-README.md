@@ -1,124 +1,106 @@
-# 🍊 Script de Instalación de Agente Zabbix
+# Script de Instalación del Agente Zabbix para RHEL/AlmaLinux/Rocky
 
-Script para instalar y configurar el agente Zabbix en distribuciones RHEL (7,8,9,10 y derivadas como AlmaLinux, Rocky, CentOS). Especialmente útil para VMs descubiertas por Zabbix.
+¡Hola! Este script está diseñado para que instalar y configurar el agente de Zabbix en tus VM VMware, Es distinto del otro instalador del agente, porque Zabbix no puede agregar cifrado PSK en sus plantillas de VMware ESX, por lo que este instalador no usa cifrado, sólo para usarse con un zabbix proxy o un server zabbix en la misma red que el VMware, NO lo usen para chequeos remotos porque envía todo en claro, sin cifrar. 
 
----
+## ¿Qué hace este script?
 
-## 🚀 ¿Qué hace este script?
+Este script todo-en-uno realiza las siguientes tareas:
 
-| Función | Descripción |
-|---------|-------------|
-| Instalación automática | Instala Zabbix Agent 7.4 desde repositorio oficial (fallback a binario estático) |
-| Configuración de agente | Configura el agente con la IP del servidor Zabbix (resuelve hostnames) |
-| Firewall | Abre puerto 10050 en firewalld o iptables (detecta política DROP/REJECT) |
-| Registro en Zabbix | Actualiza host existente vía API (NO crea host nuevo) |
-| Plantillas | Vincula "Linux by Zabbix agent" y "VMware Guest" al host |
-| Reparación automática | Corrige error del PID file en RHEL (crea /run/zabbix y permisos) |
+- Pre-chequea el sistema: Verifica que se ejecute como root y resuelve el hostname/IP del servidor Zabbix.
+- Abre el firewall: Detecta si usas firewalld o iptables y agrega la regla necesaria para que el servidor Zabbix pueda comunicarse con el agente (puerto 10050).
+- Detecta tu sistema operativo: Identifica la versión de RHEL/AlmaLinux/Rocky para instalar el paquete correcto.
+- Instala el agente Zabbix: Primero intenta la instalación desde el repositorio oficial. Si falla (por ejemplo, en RHEL 10), descarga e instala el binario estático de Zabbix.
+- Configura el agente: Ajusta los archivos de configuración (zabbix_agentd.conf o zabbix_agent2.conf) con la IP de tu servidor Zabbix y el nombre del host.
+- Repara errores comunes: Soluciona problemas típicos como archivos PidFile incorrectos o directorios con permisos inadecuados.
+- Registra el host en Zabbix (vía API): Se comunica con tu instancia de Zabbix para crear el host, asignarlo al grupo "Linux Servers" y vincularle las plantillas que le indiques.
 
----
+## Requisitos Previos
 
-## ⚠️ Importante
+Antes de lanzar el script, asegúrate de tener:
 
-- La VM debe estar descubierta primero por Zabbix (a través del vCenter) antes de ejecutar este script
-- Este script no crea el host, solo actualiza sus templates y configura el agente local
-- Si el host no existe en Zabbix, el script mostrará una advertencia
+- Acceso root o con sudo al servidor que quieres monitorear.
+- Un Token de API de Zabbix con permisos para crear y modificar hosts.
+- La URL de tu API de Zabbix (por defecto, apunta a http://monitoreo.orangebox.cl/zabbix/api_jsonrpc.php).
+- (Opcional) Las plantillas que quieras asignar deben existir en Zabbix con los nombres exactos.
 
----
+## Instalación y Ejecución
 
-## 📋 Requisitos previos
+Sigue estos sencillos pasos:
 
-- Acceso root a la máquina
-- IP o hostname del servidor Zabbix
-- Token de API de Zabbix válido (el script incluye uno, verificar vigencia)
-- Conectividad a internet (para repositorios) o acceso al binario estático
-- El host debe existir previamente en Zabbix
+1. Copia el script en tu servidor.
+2. Dale permisos de ejecución:
+   chmod +x install-zabbix-agent-vm.sh
+3. Ejecútalo como root:
+   sudo ./install-zabbix-agent-vm.sh
 
----
+Si no le pasas la IP del servidor Zabbix, usará la que está en la variable DEFAULT_ZABBIX_SERVER. Si quieres especificarla, hazlo así:
 
-## 🔧 Uso
+   sudo ./install-zabbix-agent-vm.sh IP_O_HOSTNAME_DEL_SERVIDOR_ZABBIX
 
-chmod +x install_zabbix_agent.sh
+El script te irá informando de cada paso y, al final, verificará que el servicio del agente esté funcionando.
 
-./install_zabbix_agent.sh 192.168.200.240
+## Configuración Personalizable (Edita el Script)
 
-O con hostname:
+Antes de ejecutar, puedes modificar algunas variables dentro del script para adaptarlo a tu entorno:
 
-./install_zabbix_agent.sh monitoreo.orangebox.cl
+- DEFAULT_ZABBIX_SERVER: IP o hostname de tu servidor Zabbix (por si no se lo pasas como argumento).
+- ZABBIX_API_URL: La URL completa de la API de Zabbix.
+- API_TOKEN: Tu token de autenticación para la API de Zabbix.
+- TEMPLATE_NAMES: Un array con los nombres exactos de las plantillas que quieres vincular al host.
 
-Sin parámetro usa la IP por defecto (192.168.200.240):
+## ¿Qué se Instala y Dónde?
 
-./install_zabbix_agent.sh
+- Ejecutables: El agente (zabbix_agentd o zabbix_agent2) se instala en /usr/sbin/.
+- Configuración: Los archivos de configuración se encuentran en /etc/zabbix/.
+- Logs: Los archivos de log del agente y del propio script de instalación se guardan en /var/log/zabbix/ y /var/log/zabbix_install.log.
+- Usuario: Se crea el usuario zabbix si no existía.
 
----
+## Funcionalidades de la API
 
-## 📂 Variables configurables
+El script utiliza la API de Zabbix para:
 
-| Variable | Descripción | Valor por defecto |
-|----------|-------------|-------------------|
-| DEFAULT_ZABBIX_SERVER | IP del servidor Zabbix | 192.168.200.240 |
-| ZABBIX_API_URL | URL de la API de Zabbix | http://monitoreo.orangebox.cl/zabbix/api_jsonrpc.php |
-| API_TOKEN | Token de autenticación | a3a43004795a... |
-| TEMPLATE_NAMES | Plantillas a vincular | Linux by Zabbix agent, VMware Guest |
+- Verificar la conexión y la validez del token.
+- Obtener los IDs de las plantillas que especifiques (Linux by Zabbix agent, VMware Guest, etc.).
+- Obtener o crear el grupo "Linux Servers".
+- Crear el host si no existe, o actualizar sus plantillas si ya existe.
 
----
+## Gestión del Firewall
 
-## 📝 Comportamiento detallado
+El script es inteligente con el firewall:
 
-1. Verifica que se ejecute como root
-2. Resuelve la IP del servidor Zabbix (si se pasó hostname)
-3. Configura el firewall:
-   - Si firewalld está activo: agrega regla rich-rule para permitir al server Zabbix en puerto 10050
-   - Si iptables tiene política INPUT DROP o REJECT: agrega regla en posición 1
-4. Detecta la versión de RHEL y agrega el repositorio correspondiente
-5. Instala zabbix-agent (y zabbix-agent2 si está disponible)
-6. Si falla la instalación por repositorio, descarga e instala el binario estático
-7. Configura el agente con la IP del servidor Zabbix
-8. Corrige directorios /run/zabbix y permisos del usuario zabbix
-9. Busca el host en Zabbix por su nombre visible (ej: www.jhg.cl, no el UUID)
-10. Si el host existe, actualiza sus templates
-11. Inicia y habilita el servicio
+- Si detecta firewalld activo, agrega una rich rule para permitir el tráfico desde el servidor Zabbix.
+- Si no detecta firewalld pero ve que iptables está en uso con una política DROP o REJECT, agrega una regla para aceptar la conexión.
+- Guarda las reglas para que persistan tras un reinicio.
 
----
+## Manejo de Errores y Reparación
 
-## 📄 Logs
+- Si el agente no logra iniciar, el script ejecuta una función de reparación que corrige problemas comunes como el directorio PidFile o permisos incorrectos.
+- Intenta instalar desde el repositorio y, si falla, recurre a la descarga del binario estático.
 
-Toda la instalación se registra en: /var/log/zabbix_install.log
+## Verificación Final
 
----
+Al terminar, el script te indicará si el servicio del agente está activo, qué versión se instaló (Agent o Agent2) y dónde puedes revisar los logs para más detalles.
 
-## 📌 Notas
+## Autor
 
-- El script funciona en RHEL 7, 8, 9, 10 y derivados (AlmaLinux, Rocky, CentOS)
-- Si firewalld está instalado pero no activo, no se configura
-- La regla de iptables se agrega al inicio de la cadena INPUT (posición 1) para prioridad
-- Las reglas de iptables se guardan automáticamente en /etc/sysconfig/iptables (RHEL)
-- Si el token de API expiró, el agente se instala pero no se actualizan los templates
+Felipe Román - froman@orangebox.cl
+
+**OrangeBox - Área de Infraestructura**
+Web: https://orangebox.cl
+
+## Licencia
+
+Script de uso interno. Puedes modificarlo y adaptarlo a tus necesidades.
 
 ---
 
-## 🧠 ¿Necesitas ayuda con tu infraestructura?
+** ¿Conoces una PyME que necesite hardening o auditoría?**  
+Recomiéndanos. Ayudamos a empresas a proteger su infraestructura Linux.
 
-En OrangeBox somos especialistas en monitoreo proactivo y administración de infraestructura crítica.
-
-🔍 ¿Quieres visibilidad real de tu operación?
-
-➡️ Recursos gratuitos:
-Scripts para Zabbix (agentes e instalación automática): https://github.com/OrangeBox-Labs/Zabbix.git
-
-➡️ Planes y servicios profesionales:
-Monitoreo y observabilidad: https://www.orangebox.cl/servicios/monitoreo-observabilidad/
-Servicios administrados (planes desde 3 UF/mes): https://www.orangebox.cl/servicios/servicios-administrados/
-
----
-
-📧 Contacto: info@orangebox.cl | 🌐 www.orangebox.cl
-
----
 **¿Quieres más contenido?**
 
 🔹 **Blog**: [www.orangebox.cl/blog](https://www.orangebox.cl/blog/) — Artículos técnicos de seguridad e infraestructura  
 🔹 **YouTube**: [@OrangeBoxLinux](https://www.youtube.com/@OrangeBoxLinux) — Ataques, defensas, guías y recomendaciones en video  
 🔹 **GitHub**: [OrangeBox-Labs](https://github.com/OrangeBox-Labs) — Más scripts, automatización y seguridad open-source
 
-— Felipe Román, OrangeBox
 

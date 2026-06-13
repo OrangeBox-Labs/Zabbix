@@ -154,19 +154,16 @@ for CERT in "$CERT_DIR"/*.crt; do
     fi
 done
 
-echo "========================================"
-echo "RESUMEN DE CERTIFICADOS OPENVPN"
-echo "========================================"
-echo -e "$OUTPUT"
-echo "========================================"
 
 if [ $STATUS -eq 0 ]; then
-    echo "ESTADO GLOBAL: OK - Todos los certificados estan vigentes"
+    echo "OK: - Todos los certificados estan vigentes"
 elif [ $STATUS -eq 1 ]; then
-    echo "ESTADO GLOBAL: WARNING - $WARN_COUNT certificado(s) proximos a vencer"
+    echo "WARNING: - $WARN_COUNT certificado(s) proximos a vencer"
 else
-    echo "ESTADO GLOBAL: CRITICAL - $CRIT_COUNT certificado(s) por vencer"
+    echo "CRITICAL: - $CRIT_COUNT certificado(s) por vencer"
 fi
+echo "========================================"
+echo -e "$OUTPUT"
 echo "========================================"
 exit $STATUS
 EOF
