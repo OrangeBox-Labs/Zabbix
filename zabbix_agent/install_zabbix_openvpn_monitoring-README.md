@@ -20,7 +20,7 @@ Antes de comenzar, asegúrate de tener:
 - Acceso root o con sudo al servidor OpenVPN.
 - Los certificados de tus clientes en la ruta estándar de Easy-RSA (/etc/openvpn/server/easy-rsa/pki/issued).
 
-##  Instalación
+## Paso 1: Clonar el repositorio en el servidor OpenVPN (Agente) y ejecutar el script
 
 ```
 git clone https://github.com/OrangeBox-Labs/Zabbix.git
@@ -30,6 +30,34 @@ cd zabbix_agent
 
 El script hará todo el trabajo sucio por ti: detectará la ruta de tus certificados, creará los scripts necesarios, configurará los parámetros de usuario (UserParameters) y ajustará los permisos para el usuario zabbix.
 
+## Paso 2: Importar la plantilla en el servidor Zabbix
+
+Acceder a la interfaz web de Zabbix y seguir:
+Recopilacion de datos → Plantillas → Importar
+Seleccionar el archivo: /tmp/zabbix-scripts/zabbix_server/openvpn_certs_template.xml
+Marcar las opciones:
+- Crear grupos faltantes
+- Crear plantillas faltantes
+- Crear elementos faltantes
+- Actualizar elementos existentes
+Hacer clic en Importar
+
+## Paso 4: Aplicar la plantilla al host
+
+En la interfaz web de Zabbix:
+Recopilacion de datos → Hosts
+Seleccionar el servidor OpenVPN
+Ir a la pestaña Plantillas → Añadir
+Buscar: Openvpn certs by OrangeBox
+Seleccionar → Actualizar
+
+## Verificacion
+
+Esperar unos minutos y revisar:
+Recopilacion de datos → Hosts → Seleccionar el host → Metricas
+Deberian aparecer los items descubiertos: openvpn.cert.days[froman], openvpn.cert.days[medicy], etc.
+
+---
 ## ¿Qué se Instala?
 
 El script desplegará tres scripts clave en /usr/local/bin/:
@@ -40,7 +68,7 @@ El script desplegará tres scripts clave en /usr/local/bin/:
 
 Además, creará el archivo de configuración openvpn_certs.conf en el directorio de configuración de Zabbix Agent 2.
 
-## 📊 Configuración en Zabbix WEB
+## Configuración en Zabbix WEB (Opcional si no usaron el template)
 
 Una vez que el script haya terminado, tendrás que hacer algunos pasos en la interfaz web de Zabbix:
 
@@ -158,7 +186,7 @@ Script de uso interno. Puedes modificarlo y adaptarlo a tus necesidades.
 
 ---
 
-**🤝 ¿Conoces una PyME que necesite hardening o auditoría?**  
+** ¿Conoces una PyME que necesite hardening o auditoría?**  
 Recomiéndanos. Ayudamos a empresas a proteger su infraestructura Linux.
 
 **¿Quieres más contenido?**
