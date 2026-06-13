@@ -146,6 +146,11 @@ for CERT in "$CERT_DIR"/*.crt; do
     [ -f "$CERT" ] || continue
     NAME=$(basename "$CERT" .crt)
     
+    # Excluir ca.crt
+    if [ "$NAME" = "ca" ]; then
+        continue
+    fi
+    
     if [ $FIRST -eq 0 ]; then
         echo -n ","
     fi

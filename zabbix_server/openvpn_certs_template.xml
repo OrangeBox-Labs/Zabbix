@@ -112,8 +112,8 @@
                                     <fields>
                                         <field>
                                             <type>INTEGER</type>
-                                            <name>ds.0.aggregate_function</name>
-                                            <value>7</value>
+                                            <name>ds.0.axisy</name>
+                                            <value>1</value>
                                         </field>
                                         <field>
                                             <type>INTEGER</type>
@@ -127,48 +127,23 @@
                                         </field>
                                         <field>
                                             <type>INTEGER</type>
-                                            <name>ds.0.stacked</name>
-                                            <value>1</value>
-                                        </field>
-                                        <field>
-                                            <type>INTEGER</type>
                                             <name>ds.0.type</name>
                                             <value>3</value>
                                         </field>
                                         <field>
                                             <type>INTEGER</type>
-                                            <name>graph_item_problems</name>
+                                            <name>lefty</name>
                                             <value>0</value>
-                                        </field>
-                                        <field>
-                                            <type>STRING</type>
-                                            <name>lefty_min</name>
-                                            <value>0</value>
-                                        </field>
-                                        <field>
-                                            <type>STRING</type>
-                                            <name>lefty_static_units</name>
-                                            <value>Dias</value>
-                                        </field>
-                                        <field>
-                                            <type>INTEGER</type>
-                                            <name>lefty_units</name>
-                                            <value>1</value>
                                         </field>
                                         <field>
                                             <type>STRING</type>
                                             <name>reference</name>
-                                            <value>BODSY</value>
+                                            <value>UHWIF</value>
                                         </field>
                                         <field>
                                             <type>INTEGER</type>
-                                            <name>righty</name>
-                                            <value>0</value>
-                                        </field>
-                                        <field>
-                                            <type>INTEGER</type>
-                                            <name>show_problems</name>
-                                            <value>1</value>
+                                            <name>rf_rate</name>
+                                            <value>900</value>
                                         </field>
                                     </fields>
                                 </widget>
@@ -232,23 +207,13 @@
                                         </field>
                                         <field>
                                             <type>INTEGER</type>
-                                            <name>show_timeline</name>
-                                            <value>0</value>
+                                            <name>show_suppressed</name>
+                                            <value>1</value>
                                         </field>
                                         <field>
                                             <type>INTEGER</type>
-                                            <name>tags.0.operator</name>
+                                            <name>show_timeline</name>
                                             <value>0</value>
-                                        </field>
-                                        <field>
-                                            <type>STRING</type>
-                                            <name>tags.0.tag</name>
-                                            <value>Application</value>
-                                        </field>
-                                        <field>
-                                            <type>STRING</type>
-                                            <name>tags.0.value</name>
-                                            <value>certificate</value>
                                         </field>
                                     </fields>
                                 </widget>
