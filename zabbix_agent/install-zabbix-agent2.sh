@@ -285,11 +285,6 @@ install_dependencies() {
 install_zabbix_agent2() {
   log_info "Intentando instalar Zabbix Agent 2 desde el repositorio..."
 
-  if [ "$OS_FAMILY" = "centos7" ] || [ "$OS_FAMILY" = "centos8" ]; then
-    log_debug "CentOS 7/8 no soporta Zabbix Agent 2"
-    return 1
-  fi
-
   if command -v dnf &>/dev/null; then
     if dnf install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
       AGENT_TYPE="zabbix_agent2"
@@ -388,21 +383,21 @@ install_agent() {
   # Configurar repositorios según versión e instalar
   if [ "$OS_FAMILY" = "centos7" ]; then
     setup_centos7_repos
-    if yum install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
-      AGENT_TYPE="zabbix_agentd"
-      AGENT_SERVICE="zabbix-agent"
-      AGENT_BINARY="zabbix_agentd"
-      CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
+    if yum install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
+      AGENT_TYPE="zabbix_agentd2"
+      AGENT_SERVICE="zabbix-agent2"
+      AGENT_BINARY="zabbix_agentd2"
+      CONFIG_FILE="/etc/zabbix/zabbix_agentd2.conf"
       log_info "Zabbix Agent instalado exitosamente en CentOS 7"
       return 0
     fi
   elif [ "$OS_FAMILY" = "centos8" ]; then
     setup_centos8_repos
-    if dnf install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
-      AGENT_TYPE="zabbix_agentd"
-      AGENT_SERVICE="zabbix-agent"
-      AGENT_BINARY="zabbix_agentd"
-      CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
+    if dnf install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
+      AGENT_TYPE="zabbix_agentd2"
+      AGENT_SERVICE="zabbix-agent2"
+      AGENT_BINARY="zabbix_agentd2"
+      CONFIG_FILE="/etc/zabbix/zabbix_agentd2.conf"
       log_info "Zabbix Agent instalado exitosamente en CentOS 8"
       return 0
     fi
