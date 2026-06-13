@@ -7,7 +7,8 @@
 # Email: froman@orangebox.cl
 # Descripcion: Instalacion de Zabbix Agent 7.4 en host remoto
 #              con registro automatico via API y TLS/PSK
-#              Soporta: CentOS 7 (binario), AlmaLinux/RHEL 8/9/10 (repo)
+#              PRIMERO instala y configura el agente, SOLO despues registra
+#              Soporta: CentOS 7/8 (Vault), RHEL/AlmaLinux/Rocky 8/9/10
 #              Prioridad: Agent2 > Agent clasico > Binario estatico
 # ==============================================
 
@@ -23,7 +24,7 @@ NC='\033[0m'
 # ==============================================
 
 # Token de API de Zabbix (dejar vacio para preguntar)
-API_TOKEN="b416db4bb91c549b20ac6b22c2b1303429855cd98968130b2393b3ce54e3e7fe"
+API_TOKEN="e47fd64883410c3c41e1515fe6ec7aca9ad9f316d671a71e95e353cd5a6780d5"
 
 # Servidor Zabbix (dejar vacio para preguntar)
 ZABBIX_SERVER="monitoreo.orangebox.cl"
@@ -56,11 +57,12 @@ show_help() {
   echo -e "${GREEN}============================================${NC}"
   echo -e "${GREEN}  Script: install-zabbix-agent.sh${NC}"
   echo -e "${GREEN}  Instalador de Agente Zabbix 7.4${NC}"
-  echo -e "${GREEN}  Soporta: CentOS 7, AlmaLinux/RHEL 8/9/10${NC}"
+  echo -e "${GREEN}  Soporta: CentOS 7/8, RHEL/AlmaLinux/Rocky 8/9/10${NC}"
   echo -e "${GREEN}============================================${NC}\n"
 
   echo -e "${YELLOW}DESCRIPCIÓN:${NC}"
   echo -e "  Instala Zabbix Agent 7.4, configura TLS/PSK y registra via API\n"
+  echo -e "  IMPORTANTE: Primero instala y configura el agente, solo despues registra en Zabbix\n"
 
   echo -e "${YELLOW}MODOS DE EJECUCIÓN:${NC}"
   echo -e "  ${GREEN}--lan${NC}      - Modo Red Local (HTTP + /zabbix)"
@@ -82,7 +84,10 @@ show_help() {
 }
 
 log_info() { echo -e "${GREEN}[✓]${NC} $1"; }
-log_error() { echo -e "${RED}[✗]${NC} $1"; }
+log_error() {
+  echo -e "${RED}[✗]${NC} ERROR: $1"
+  exit 1
+}
 log_warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 log_step() { echo -e "\n${BLUE}[*]${NC} $1"; }
 log_debug() { [ "$DEBUG_MODE" = true ] && echo -e "${CYAN}[DEBUG]${NC} $1"; }
@@ -90,7 +95,6 @@ log_debug() { [ "$DEBUG_MODE" = true ] && echo -e "${CYAN}[DEBUG]${NC} $1"; }
 check_root() {
   if [ "$EUID" -ne 0 ]; then
     log_error "Este script debe ejecutarse como root"
-    exit 1
   fi
 }
 
@@ -115,7 +119,6 @@ get_local_ip() {
     log_info "IP Local detectada: $LOCAL_IP"
   else
     log_error "No se pudo detectar IP local"
-    exit 1
   fi
 }
 
@@ -136,11 +139,12 @@ detect_os() {
   VER=$VERSION_ID
   log_info "Sistema: $NAME $VERSION_ID"
 
-  # Detectar CentOS 7 específicamente
   if [ "$OS" = "centos" ] && [[ "$VER" =~ ^7 ]]; then
     OS_FAMILY="centos7"
-    CENTOS7_VERSION="7"
-    log_info "CentOS 7 detectado - usando binario estático Zabbix 7.4"
+    log_info "CentOS 7 detectado - usando repositorios Vault"
+  elif [ "$OS" = "centos" ] && [[ "$VER" =~ ^8 ]]; then
+    OS_FAMILY="centos8"
+    log_info "CentOS 8 detectado - usando repositorios Vault"
   elif [ -f /etc/almalinux-release ]; then
     OS_FAMILY="almalinux"
     ALMA_VERSION=$(grep -oE '[0-9]+' /etc/almalinux-release | head -1)
@@ -157,164 +161,136 @@ detect_os() {
     ALMA_VERSION=$(echo $VER | cut -d. -f1)
   fi
 
-  log_debug "OS Family: $OS_FAMILY, Version: ${ALMA_VERSION:-$CENTOS7_VERSION}"
+  log_debug "OS Family: $OS_FAMILY, Version: ${ALMA_VERSION:-7}"
 }
+
+# ==============================================
+# FUNCIONES DE MANEJO DE REPOSITORIOS
+# ==============================================
+
+REPO_BACKUP_DIR="/etc/yum.repos.d.backup.$$"
+
+disable_all_repos() {
+  log_step "Deshabilitando TODOS los repositorios existentes..."
+
+  mkdir -p "$REPO_BACKUP_DIR"
+
+  for repo in /etc/yum.repos.d/*.repo; do
+    if [ -f "$repo" ]; then
+      mv "$repo" "$REPO_BACKUP_DIR/"
+      log_debug "Deshabilitado: $(basename $repo)"
+    fi
+  done
+
+  log_info "Todos los repositorios han sido deshabilitados"
+}
+
+restore_all_repos() {
+  log_step "Restaurando repositorios originales..."
+
+  if [ -d "$REPO_BACKUP_DIR" ]; then
+    cp -f "$REPO_BACKUP_DIR"/*.repo /etc/yum.repos.d/ 2>/dev/null
+    log_info "Repositorios originales restaurados"
+    rm -rf "$REPO_BACKUP_DIR"
+  fi
+
+  if command -v dnf &>/dev/null; then
+    dnf clean all >/dev/null 2>&1
+  else
+    yum clean all >/dev/null 2>&1
+  fi
+}
+
+setup_centos7_repos() {
+  log_step "Configurando repositorios para CentOS 7 (usando Vault)..."
+
+  cat >/etc/yum.repos.d/CentOS-Vault.repo <<'EOF'
+[base]
+name=CentOS-7 - Base
+baseurl=http://vault.centos.org/7.9.2009/os/$basearch/
+gpgcheck=0
+enabled=1
+
+[updates]
+name=CentOS-7 - Updates
+baseurl=http://vault.centos.org/7.9.2009/updates/$basearch/
+gpgcheck=0
+enabled=1
+EOF
+
+  rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/rhel/7/noarch/zabbix-release-latest-7.4.el7.noarch.rpm --nodeps 2>/dev/null
+
+  yum clean all >/dev/null 2>&1
+  log_info "Repositorios CentOS 7 configurados"
+}
+
+setup_centos8_repos() {
+  log_step "Configurando repositorios para CentOS 8 (usando Vault)..."
+
+  cat >/etc/yum.repos.d/CentOS-Vault.repo <<'EOF'
+[baseos]
+name=CentOS-8 - BaseOS
+baseurl=http://vault.centos.org/8.5.2111/BaseOS/$basearch/os/
+gpgcheck=0
+enabled=1
+
+[appstream]
+name=CentOS-8 - AppStream
+baseurl=http://vault.centos.org/8.5.2111/AppStream/$basearch/os/
+gpgcheck=0
+enabled=1
+EOF
+
+  rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/rhel/8/noarch/zabbix-release-latest-7.4.el8.noarch.rpm --nodeps 2>/dev/null
+
+  dnf clean all >/dev/null 2>&1
+  log_info "Repositorios CentOS 8 configurados"
+}
+
+setup_rhel_repos() {
+  local version="$1"
+  log_step "Configurando repositorios para RHEL/AlmaLinux/Rocky $version..."
+
+  rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/rhel/${version}/noarch/zabbix-release-latest-7.4.el${version}.noarch.rpm --nodeps 2>/dev/null
+
+  if command -v dnf &>/dev/null; then
+    dnf clean all >/dev/null 2>&1
+  else
+    yum clean all >/dev/null 2>&1
+  fi
+
+  log_info "Repositorios RHEL/AlmaLinux/Rocky $version configurados"
+}
+
+# ==============================================
+# FUNCIONES DE INSTALACIÓN DE DEPENDENCIAS
+# ==============================================
 
 install_dependencies() {
   log_step "Instalando dependencias..."
-  case $OS_FAMILY in
-  centos7)
-    yum install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
-    ;;
-  rhel | almalinux)
+
+  if command -v dnf &>/dev/null; then
     dnf install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
-    ;;
-  debian)
-    apt-get update -qq && apt-get install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
-    ;;
-  suse)
-    zypper install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
-    ;;
-  esac
+  else
+    yum install -y curl openssl net-tools jq >>/tmp/zabbix_agent_install.log 2>&1
+  fi
+
   log_info "Dependencias instaladas"
 }
 
-disable_epel_conflict() {
-  log_step "Deshabilitando conflicto con EPEL..."
-
-  # CentOS 7 no tiene EPEL configurado por defecto
-  if [ "$OS_FAMILY" = "centos7" ]; then
-    log_debug "CentOS 7 - omitiendo configuracion EPEL"
-    return 0
-  fi
-
-  if [ -f /etc/yum.repos.d/epel.repo ]; then
-    if ! grep -q "excludepkgs=zabbix" /etc/yum.repos.d/epel.repo; then
-      sed -i '/^\[epel\]/a excludepkgs=zabbix*' /etc/yum.repos.d/epel.repo
-      log_info "EPEL configurado para excluir zabbix"
-    else
-      log_info "EPEL ya excluye zabbix"
-    fi
-  fi
-}
-
-install_zabbix_repo() {
-  log_step "Configurando repositorio Zabbix..."
-
-  # Limpiar repositorios viejos
-  rm -f /etc/yum.repos.d/zabbix.repo
-
-  # CentOS 7 no usa repositorio, usa binario directamente
-  if [ "$OS_FAMILY" = "centos7" ]; then
-    log_info "CentOS 7: no se necesita repositorio (usando binario estático)"
-    return 0
-  fi
-
-  case $OS_FAMILY in
-  rhel | almalinux)
-    # Validar que la versión es soportada (8, 9, 10)
-    if [[ ! "$ALMA_VERSION" =~ ^(8|9|10)$ ]]; then
-      log_error "Versión $ALMA_VERSION no soportada. Versiones soportadas: 8, 9, 10"
-      return 1
-    fi
-
-    # URL CORRECTA según documentación oficial de Zabbix
-    local REPO_URL="https://repo.zabbix.com/zabbix/7.4/release/alma/${ALMA_VERSION}/noarch/zabbix-release-latest-7.4.el${ALMA_VERSION}.noarch.rpm"
-    log_info "Repositorio: $REPO_URL"
-    log_debug "URL: $REPO_URL"
-
-    rpm -Uvh "$REPO_URL" >>/tmp/zabbix_agent_install.log 2>&1
-
-    if [ $? -ne 0 ] || [ ! -f /etc/yum.repos.d/zabbix.repo ]; then
-      log_warn "No se pudo instalar el repositorio desde $REPO_URL"
-      return 1
-    fi
-
-    # Limpiar caché
-    dnf clean all >>/tmp/zabbix_agent_install.log 2>&1
-    ;;
-  debian)
-    local DEB_VERSION=""
-    case $OS in
-    ubuntu)
-      case $VER in
-      24.04*) DEB_VERSION="noble" ;;
-      22.04*) DEB_VERSION="jammy" ;;
-      20.04*) DEB_VERSION="focal" ;;
-      *) DEB_VERSION="jammy" ;;
-      esac
-      ;;
-    debian)
-      case $VER in
-      12*) DEB_VERSION="bookworm" ;;
-      11*) DEB_VERSION="bullseye" ;;
-      *) DEB_VERSION="bookworm" ;;
-      esac
-      ;;
-    esac
-    local REPO_URL="https://repo.zabbix.com/zabbix/7.4/ubuntu/pool/main/z/zabbix-release/zabbix-release_latest_7.4+${DEB_VERSION}_all.deb"
-    wget -q "$REPO_URL" -O /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
-    dpkg -i /tmp/zabbix-release.deb >>/tmp/zabbix_agent_install.log 2>&1
-    apt-get update -qq >>/tmp/zabbix_agent_install.log 2>&1
-    ;;
-  esac
-
-  log_info "Repositorio Zabbix configurado correctamente"
-  return 0
-}
-
-# -----------------------------------------------------------------------------
-# FUNCIONES DE INSTALACIÓN DE AGENTE (Prioridad: Agent2 > Agent > Binario)
-# -----------------------------------------------------------------------------
-
-install_zabbix_agent_centos7_binary() {
-  log_step "Instalando Zabbix Agent 7.4 en CentOS 7 desde binario estático..."
-
-  local BINARY_URL="https://cdn.zabbix.com/zabbix/binaries/stable/7.4/7.4.11/zabbix_agent-7.4.11-linux-3.0-amd64-static.tar.gz"
-  local TMP_DIR="/tmp/zabbix_agent_binary_$$"
-
-  mkdir -p "$TMP_DIR"
-  cd "$TMP_DIR"
-
-  log_info "Descargando binario desde: $BINARY_URL"
-  curl -L -o zabbix_agent.tar.gz "$BINARY_URL" >>/tmp/zabbix_agent_install.log 2>&1
-
-  if [ $? -ne 0 ] || [ ! -f zabbix_agent.tar.gz ]; then
-    log_error "No se pudo descargar el binario"
-    return 1
-  fi
-
-  tar -xzf zabbix_agent.tar.gz >>/tmp/zabbix_agent_install.log 2>&1
-
-  # Copiar binarios
-  cp zabbix_agent/sbin/zabbix_agentd /usr/sbin/
-  cp zabbix_agent/bin/zabbix_get /usr/bin/
-  cp zabbix_agent/bin/zabbix_sender /usr/bin/
-
-  # Crear usuario si no existe
-  id -u zabbix &>/dev/null || useradd -r -s /sbin/nologin zabbix
-
-  # Configurar variables
-  AGENT_TYPE="zabbix_agentd"
-  AGENT_SERVICE="zabbix-agent"
-  AGENT_BINARY="zabbix_agentd"
-  CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
-
-  log_info "Zabbix Agent 7.4.11 instalado desde binario estático en CentOS 7"
-  return 0
-}
+# ==============================================
+# FUNCIONES DE INSTALACIÓN DE AGENTE
+# ==============================================
 
 install_zabbix_agent2() {
   log_info "Intentando instalar Zabbix Agent 2 desde el repositorio..."
 
-  # CentOS 7 no tiene Agent2
-  if [ "$OS_FAMILY" = "centos7" ]; then
-    log_debug "CentOS 7 no soporta Zabbix Agent 2"
+  if [ "$OS_FAMILY" = "centos7" ] || [ "$OS_FAMILY" = "centos8" ]; then
+    log_debug "CentOS 7/8 no soporta Zabbix Agent 2"
     return 1
   fi
 
-  case $OS_FAMILY in
-  rhel | almalinux)
+  if command -v dnf &>/dev/null; then
     if dnf install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
       AGENT_TYPE="zabbix_agent2"
       AGENT_SERVICE="zabbix-agent2"
@@ -323,18 +299,7 @@ install_zabbix_agent2() {
       log_info "Zabbix Agent 2 instalado exitosamente"
       return 0
     fi
-    ;;
-  debian)
-    if apt-get install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
-      AGENT_TYPE="zabbix_agent2"
-      AGENT_SERVICE="zabbix-agent2"
-      AGENT_BINARY="zabbix_agent2"
-      CONFIG_FILE="/etc/zabbix/zabbix_agent2.conf"
-      log_info "Zabbix Agent 2 instalado exitosamente"
-      return 0
-    fi
-    ;;
-  esac
+  fi
   log_warn "Zabbix Agent 2 no está disponible"
   return 1
 }
@@ -342,8 +307,7 @@ install_zabbix_agent2() {
 install_zabbix_agent_legacy() {
   log_info "Intentando instalar Zabbix Agent clásico desde el repositorio..."
 
-  case $OS_FAMILY in
-  rhel | almalinux)
+  if command -v dnf &>/dev/null; then
     if dnf install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
       AGENT_TYPE="zabbix_agentd"
       AGENT_SERVICE="zabbix-agent"
@@ -352,8 +316,7 @@ install_zabbix_agent_legacy() {
       log_info "Zabbix Agent clásico instalado exitosamente"
       return 0
     fi
-    ;;
-  centos7)
+  else
     if yum install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
       AGENT_TYPE="zabbix_agentd"
       AGENT_SERVICE="zabbix-agent"
@@ -362,18 +325,7 @@ install_zabbix_agent_legacy() {
       log_info "Zabbix Agent clásico instalado exitosamente"
       return 0
     fi
-    ;;
-  debian)
-    if apt-get install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
-      AGENT_TYPE="zabbix_agentd"
-      AGENT_SERVICE="zabbix-agent"
-      AGENT_BINARY="zabbix_agentd"
-      CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
-      log_info "Zabbix Agent clásico instalado exitosamente"
-      return 0
-    fi
-    ;;
-  esac
+  fi
   log_warn "Zabbix Agent clásico no está disponible"
   return 1
 }
@@ -392,7 +344,6 @@ install_agent_from_binary() {
 
   if [ $? -ne 0 ] || [ ! -f zabbix_agent.tar.gz ]; then
     log_error "No se pudo descargar el binario"
-    return 1
   fi
 
   tar -xzf zabbix_agent.tar.gz >>/tmp/zabbix_agent_install.log 2>&1
@@ -405,7 +356,6 @@ install_agent_from_binary() {
   # Crear usuario si no existe
   id -u zabbix &>/dev/null || useradd -r -s /sbin/nologin zabbix
 
-  # Configurar variables para el agente clásico (el binario es el clásico)
   AGENT_TYPE="zabbix_agentd"
   AGENT_SERVICE="zabbix-agent"
   AGENT_BINARY="zabbix_agentd"
@@ -418,7 +368,7 @@ install_agent_from_binary() {
 install_agent() {
   log_step "Instalando Zabbix Agent (prioridad: Agent2 > Agent clásico > Binario estático)..."
 
-  # Verificar si ya está instalado (cualquier versión)
+  # Verificar si ya está instalado
   if command -v zabbix_agent2 &>/dev/null; then
     AGENT_TYPE="zabbix_agent2"
     AGENT_SERVICE="zabbix-agent2"
@@ -432,55 +382,65 @@ install_agent() {
     AGENT_BINARY="zabbix_agentd"
     CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
     log_info "Zabbix Agent clásico ya está instalado"
-    # Verificar versión
-    local VERSION=$(zabbix_agentd --version | head -1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
-    if [[ "$VERSION" != 7.4* ]]; then
-      log_warn "Versión actual: $VERSION. Se recomienda actualizar a 7.4"
-    fi
     return 0
   fi
 
-  # Caso especial: CentOS 7 usa binario directamente (más confiable)
+  # Configurar repositorios según versión e instalar
   if [ "$OS_FAMILY" = "centos7" ]; then
-    if install_zabbix_agent_centos7_binary; then
+    setup_centos7_repos
+    if yum install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
+      AGENT_TYPE="zabbix_agentd"
+      AGENT_SERVICE="zabbix-agent"
+      AGENT_BINARY="zabbix_agentd"
+      CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
+      log_info "Zabbix Agent instalado exitosamente en CentOS 7"
       return 0
     fi
+  elif [ "$OS_FAMILY" = "centos8" ]; then
+    setup_centos8_repos
+    if dnf install -y zabbix-agent >>/tmp/zabbix_agent_install.log 2>&1; then
+      AGENT_TYPE="zabbix_agentd"
+      AGENT_SERVICE="zabbix-agent"
+      AGENT_BINARY="zabbix_agentd"
+      CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
+      log_info "Zabbix Agent instalado exitosamente en CentOS 8"
+      return 0
+    fi
+  else
+    setup_rhel_repos "$ALMA_VERSION"
   fi
 
-  # Intentar instalar Agent 2 primero
+  # Intentar instalar Agent 2
   if install_zabbix_agent2; then
     return 0
   fi
 
-  # Si Agent 2 falla, intentar Agent clásico
+  # Intentar Agent clásico
   if install_zabbix_agent_legacy; then
     return 0
   fi
 
-  # Si ambos fallan, usar binario estático (último recurso)
+  # Último recurso: binario estático
   log_warn "No se pudo instalar desde repositorios, usando binario estático..."
   if install_agent_from_binary; then
     return 0
   fi
 
   log_error "No se pudo instalar el agente Zabbix por ningún método"
-  exit 1
 }
 
-# -----------------------------------------------------------------------------
-# FUNCIONES DE CONFIGURACIÓN (comunes para ambos tipos de agente)
-# -----------------------------------------------------------------------------
+# ==============================================
+# FUNCIONES DE CONFIGURACIÓN
+# ==============================================
 
 configure_permissions() {
   log_step "Configurando permisos de directorios y archivos..."
 
-  # Crear directorios necesarios
   mkdir -p /etc/zabbix/ssl
   mkdir -p /var/log/zabbix
   mkdir -p /run/zabbix
 
-  # Establecer propietario y permisos recursivos para /etc/zabbix
-  chown -R zabbix:zabbix /etc/zabbix
+  chown -R zabbix:zabbix /etc/zabbix 2>/dev/null
   chmod 755 /etc/zabbix
   chmod 750 /etc/zabbix/ssl 2>/dev/null || chmod 755 /etc/zabbix/ssl
   chmod 755 /var/log/zabbix
@@ -492,7 +452,6 @@ configure_permissions() {
 fix_pid_file() {
   log_step "Corrigiendo archivo PID para systemd..."
 
-  # Crear directorio para PID
   mkdir -p /run/zabbix
   chown zabbix:zabbix /run/zabbix
   chmod 755 /run/zabbix
@@ -503,7 +462,6 @@ fix_pid_file() {
 generate_psk() {
   log_step "Generando PSK para TLS..."
 
-  # Asegurar directorio SSL con permisos correctos
   mkdir -p /etc/zabbix/ssl
   chown -R zabbix:zabbix /etc/zabbix/ssl
   chmod 750 /etc/zabbix/ssl
@@ -513,27 +471,21 @@ generate_psk() {
 
   echo -n "$PSK_KEY" >/etc/zabbix/ssl/psk.key
 
-  # Permisos específicos para el archivo PSK
   chown zabbix:zabbix /etc/zabbix/ssl/psk.key
   chmod 640 /etc/zabbix/ssl/psk.key
 
   log_info "PSK generado: $PSK_IDENTITY"
-  log_debug "PSK Key: $PSK_KEY"
 }
 
 configure_agent() {
   log_step "Configurando Zabbix Agent..."
 
-  # Verificar que CONFIG_FILE está definida
   if [ -z "$CONFIG_FILE" ]; then
     log_error "CONFIG_FILE no está definido"
-    exit 1
   fi
 
-  # Crear directorio de configuración si no existe
   mkdir -p $(dirname "$CONFIG_FILE")
 
-  # Crear configuración limpia (compatible con Agent2 y Agent clásico)
   cat >"$CONFIG_FILE" <<EOF
 Server=127.0.0.1,${ZABBIX_SERVER}
 ServerActive=${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}
@@ -556,28 +508,112 @@ TLSPSKFile=/etc/zabbix/ssl/psk.key
 PidFile=/run/zabbix/${AGENT_TYPE}.pid
 EOF
 
-  # Permisos del archivo de configuración
   chown root:zabbix "$CONFIG_FILE"
   chmod 640 "$CONFIG_FILE"
 
   log_info "Agente configurado con TLS/PSK"
   log_info "Archivo de configuración: $CONFIG_FILE"
-  log_info "Servidores permitidos: 127.0.0.1, ${ZABBIX_SERVER}"
 }
 
 configure_firewall() {
   log_step "Configurando firewall..."
   if command -v firewall-cmd &>/dev/null; then
-    firewall-cmd --permanent --add-port=${ZABBIX_AGENT_PORT}/tcp >>/tmp/zabbix_agent_install.log 2>&1
-    firewall-cmd --reload >>/tmp/zabbix_agent_install.log 2>&1
-    log_info "Puerto ${ZABBIX_AGENT_PORT}/tcp abierto"
+    if systemctl is-active --quiet firewalld 2>/dev/null; then
+      firewall-cmd --permanent --add-port=${ZABBIX_AGENT_PORT}/tcp >>/tmp/zabbix_agent_install.log 2>&1
+      firewall-cmd --reload >>/tmp/zabbix_agent_install.log 2>&1
+      log_info "Puerto ${ZABBIX_AGENT_PORT}/tcp abierto en firewalld"
+    fi
   elif command -v ufw &>/dev/null; then
     ufw allow ${ZABBIX_AGENT_PORT}/tcp >>/tmp/zabbix_agent_install.log 2>&1
-    log_info "Puerto ${ZABBIX_AGENT_PORT}/tcp abierto"
+    log_info "Puerto ${ZABBIX_AGENT_PORT}/tcp abierto en ufw"
   else
     log_warn "Firewall no detectado, configure manualmente el puerto ${ZABBIX_AGENT_PORT}"
   fi
 }
+
+# ==============================================
+# FUNCIONES DE SERVICIO
+# ==============================================
+
+start_agent() {
+  log_step "Iniciando servicio del agente..."
+
+  fix_pid_file
+
+  if [ ! -f /usr/lib/systemd/system/${AGENT_SERVICE}.service ] && [ ! -f /etc/systemd/system/${AGENT_SERVICE}.service ]; then
+    log_warn "Servicio systemd no encontrado, creando..."
+    cat >/etc/systemd/system/${AGENT_SERVICE}.service <<EOF
+[Unit]
+Description=Zabbix Agent
+After=network.target
+
+[Service]
+Type=simple
+User=zabbix
+Group=zabbix
+ExecStart=/usr/sbin/${AGENT_BINARY} -f -c ${CONFIG_FILE}
+ExecStop=/bin/kill -TERM \$MAINPID
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+  fi
+
+  systemctl enable ${AGENT_SERVICE} >>/tmp/zabbix_agent_install.log 2>&1
+  systemctl restart ${AGENT_SERVICE} >>/tmp/zabbix_agent_install.log 2>&1
+
+  sleep 3
+
+  if systemctl is-active ${AGENT_SERVICE} &>/dev/null; then
+    log_info "Agente iniciado correctamente"
+    return 0
+  else
+    log_error "Error al iniciar agente"
+  fi
+}
+
+verify_agent_running() {
+  log_step "Verificando que el agente está funcionando..."
+
+  if ! systemctl is-active ${AGENT_SERVICE} &>/dev/null; then
+    log_error "El agente no está corriendo. No se procederá con el registro en Zabbix"
+  fi
+
+  if command -v zabbix_get &>/dev/null; then
+    local TEST=$(zabbix_get -s 127.0.0.1 -p ${ZABBIX_AGENT_PORT} -k agent.ping 2>/dev/null)
+    if [ "$TEST" = "1" ]; then
+      log_info "Agente responde correctamente a consulta local"
+    else
+      log_warn "El agente no responde a consulta local, pero el servicio está activo"
+    fi
+  fi
+}
+
+test_local_connection() {
+  log_step "Probando conexión local al agente con TLS..."
+
+  if command -v zabbix_get &>/dev/null; then
+    local RESULT=$(zabbix_get -s 127.0.0.1 -p ${ZABBIX_AGENT_PORT} -k system.hostname \
+      --tls-connect psk \
+      --tls-psk-identity "${PSK_IDENTITY}" \
+      --tls-psk-file /etc/zabbix/ssl/psk.key 2>/dev/null)
+
+    if [ "$RESULT" = "${HOSTNAME}" ]; then
+      log_info "Conexión local TLS exitosa: $RESULT"
+    else
+      log_warn "Conexión local TLS falló: $RESULT"
+    fi
+  else
+    log_warn "zabbix_get no disponible para probar conexión local"
+  fi
+}
+
+# ==============================================
+# FUNCIONES DE API (SOLO DESPUÉS DE INSTALAR)
+# ==============================================
 
 test_api_connection() {
   log_step "Probando conexión a la API de Zabbix..."
@@ -590,7 +626,6 @@ test_api_connection() {
     return 0
   else
     log_error "No se pudo conectar a la API: $ZABBIX_API_URL"
-    return 1
   fi
 }
 
@@ -635,77 +670,19 @@ EOF
     local HOST_ID=$(echo "$RESPONSE" | grep -o '"hostids":\["[0-9]*"' | grep -o '[0-9]*')
     log_info "Host '${HOSTNAME}' registrado exitosamente (ID: ${HOST_ID})"
     log_info "TLS/PSK habilitado"
+    return 0
   elif echo "$RESPONSE" | grep -q "already exists"; then
     log_warn "El host '${HOSTNAME}' ya existe en Zabbix"
-    log_info "Puedes eliminarlo manualmente y volver a ejecutar el script"
+    log_warn "Si el agente ya estaba instalado, verificar la configuración manualmente"
+    return 0
   else
     log_error "Error al registrar host: $RESPONSE"
-    exit 1
   fi
 }
 
-start_agent() {
-  log_step "Iniciando servicio del agente..."
-
-  # Corregir archivo PID antes de iniciar
-  fix_pid_file
-
-  # Si es instalación desde binario o CentOS 7, crear servicio systemd
-  if [ ! -f /usr/lib/systemd/system/${AGENT_SERVICE}.service ] && [ ! -f /etc/systemd/system/${AGENT_SERVICE}.service ]; then
-    log_warn "Servicio systemd no encontrado, creando..."
-    cat >/etc/systemd/system/${AGENT_SERVICE}.service <<EOF
-[Unit]
-Description=Zabbix Agent
-After=network.target
-
-[Service]
-Type=simple
-User=zabbix
-Group=zabbix
-ExecStart=/usr/sbin/${AGENT_BINARY} -f -c ${CONFIG_FILE}
-ExecStop=/bin/kill -TERM \$MAINPID
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-  fi
-
-  # Habilitar e iniciar
-  systemctl enable ${AGENT_SERVICE} >>/tmp/zabbix_agent_install.log 2>&1
-  systemctl restart ${AGENT_SERVICE} >>/tmp/zabbix_agent_install.log 2>&1
-
-  sleep 2
-
-  if systemctl is-active ${AGENT_SERVICE} &>/dev/null; then
-    log_info "Agente iniciado correctamente"
-  else
-    log_error "Error al iniciar agente"
-    journalctl -u ${AGENT_SERVICE} -n 10 --no-pager
-    exit 1
-  fi
-}
-
-test_local_connection() {
-  log_step "Probando conexión local al agente con TLS..."
-
-  if command -v zabbix_get &>/dev/null; then
-    local RESULT=$(zabbix_get -s 127.0.0.1 -p ${ZABBIX_AGENT_PORT} -k system.hostname \
-      --tls-connect psk \
-      --tls-psk-identity "${PSK_IDENTITY}" \
-      --tls-psk-file /etc/zabbix/ssl/psk.key 2>/dev/null)
-
-    if [ "$RESULT" = "${HOSTNAME}" ]; then
-      log_info "Conexión local TLS exitosa: $RESULT"
-    else
-      log_warn "Conexión local TLS falló: $RESULT"
-    fi
-  else
-    log_warn "zabbix_get no disponible para probar conexión local"
-  fi
-}
+# ==============================================
+# FUNCIONES FINALES
+# ==============================================
 
 save_credentials() {
   local CRED_FILE="/root/zabbix_agent_$(date +%Y%m%d_%H%M%S).txt"
@@ -749,9 +726,9 @@ show_completion() {
   echo -e "  • Servidor: ${GREEN}${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}${NC}"
   echo -e "  • Tipo Agente: ${GREEN}${AGENT_TYPE}${NC}"
   echo -e "  • TLS/PSK: ${GREEN}Habilitado${NC}"
-  echo -e "  • Archivo PID: ${GREEN}/run/zabbix/${AGENT_TYPE}.pid${NC}"
   echo -e "\n${YELLOW}📋 VERIFICACIÓN:${NC}"
   echo -e "  systemctl status ${AGENT_SERVICE}"
+  echo -e "  tail -f /var/log/zabbix/${AGENT_TYPE}.log"
   echo -e "  zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname \\"
   echo -e "    --tls-connect psk \\"
   echo -e "    --tls-psk-identity \"${PSK_IDENTITY}\" \\"
@@ -794,7 +771,7 @@ while [[ $# -gt 0 ]]; do
     exit 0
     ;;
   *)
-    log_error "Opción desconocida: $1"
+    echo -e "${RED}[✗] Opción desconocida: $1${NC}"
     exit 1
     ;;
   esac
@@ -803,9 +780,9 @@ done
 clear
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Instalador de Agente Zabbix 7.4${NC}"
-echo -e "${GREEN}  Soporta: CentOS 7, AlmaLinux/RHEL 8/9/10${NC}"
+echo -e "${GREEN}  Soporta: CentOS 7/8, AlmaLinux/RHEL 8/9/10${NC}"
 echo -e "${GREEN}  Prioridad: Agent2 > Agent > Binario${NC}"
-echo -e "${GREEN}  con TLS/PSK y registro automático${NC}"
+echo -e "${GREEN}  PRIMERO instala, LUEGO registra${NC}"
 echo -e "${GREEN}============================================${NC}\n"
 
 check_root
@@ -813,18 +790,15 @@ check_root
 # Configurar según modo
 if [ -n "$CUSTOM_URL" ]; then
   ZABBIX_API_URL="$CUSTOM_URL"
-  MODE_NAME="Personalizado"
   get_local_ip
   AGENT_IP="$LOCAL_IP"
 elif [ "$MODE" = "lan" ]; then
   ZABBIX_API_URL="http://${ZABBIX_SERVER}/zabbix/api_jsonrpc.php"
-  MODE_NAME="LAN"
   get_local_ip
   AGENT_IP="$LOCAL_IP"
   log_info "Modo LAN: $ZABBIX_API_URL"
 elif [ "$MODE" = "wan" ]; then
   ZABBIX_API_URL="https://${ZABBIX_SERVER}/api_jsonrpc.php"
-  MODE_NAME="WAN"
   get_public_ip
   AGENT_IP="$PUBLIC_IP"
   log_info "Modo WAN: $ZABBIX_API_URL"
@@ -850,31 +824,56 @@ else
   esac
 fi
 
-# Obtener credenciales
 if [ "$AUTO_MODE" = false ]; then
   get_server_info
 else
-  [ -z "$API_TOKEN" ] && log_error "Modo automático requiere API_TOKEN" && exit 1
-  [ -z "$ZABBIX_SERVER" ] && log_error "Modo automático requiere ZABBIX_SERVER" && exit 1
+  [ -z "$API_TOKEN" ] && log_error "Modo automático requiere API_TOKEN"
+  [ -z "$ZABBIX_SERVER" ] && log_error "Modo automático requiere ZABBIX_SERVER"
 fi
 
 HOSTNAME=$(hostname -f 2>/dev/null || hostname)
 log_debug "Hostname final: $HOSTNAME"
 
-# Instalación
+# ==============================================
+# INSTALACIÓN (PRIMERO)
+# ==============================================
+
 detect_os
+
+# Deshabilitar TODOS los repositorios existentes
+disable_all_repos
+
+# Instalar dependencias y agente
 install_dependencies
-disable_epel_conflict
-install_zabbix_repo
 install_agent
+
+# Configurar todo
 configure_permissions
 generate_psk
 configure_agent
 fix_pid_file
 configure_firewall
+
+# Iniciar y verificar agente
+start_agent
+verify_agent_running
+test_local_connection
+
+# Restaurar repositorios originales
+restore_all_repos
+
+# ==============================================
+# REGISTRO EN ZABBIX (SOLO DESPUÉS)
+# ==============================================
+
+log_step "AGENTE INSTALADO Y FUNCIONANDO. Procediendo con registro en Zabbix..."
+
 test_api_connection
 register_host
-start_agent
-test_local_connection
+
+# ==============================================
+# FINALIZAR
+# ==============================================
+
 save_credentials
 show_completion
