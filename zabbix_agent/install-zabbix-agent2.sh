@@ -500,6 +500,7 @@ TLSPSKFile=/etc/zabbix/ssl/psk.key
 
 # Archivo PID para systemd
 PidFile=/run/zabbix/${AGENT_TYPE}.pid
+Include=/etc/zabbix/zabbix_agent2.d/*.conf
 EOF
 
   chown root:zabbix "$CONFIG_FILE"
