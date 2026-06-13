@@ -12,7 +12,7 @@
 # --- Variables de configuración (EDITAR SEGÚN ENTORNO) ---
 DEFAULT_ZABBIX_SERVER="192.168.200.240"
 ZABBIX_API_URL="http://monitoreo.orangebox.cl/zabbix/api_jsonrpc.php"
-API_TOKEN="a3a43004795a213f565fb7a4dd8f4a5c7201cf59a6b4a5b1d0661a4fa1b0af2e"
+API_TOKEN="TU_NUEVO_TOKEN_AQUI"
 
 # Plantillas a vincular (nombre exacto en Zabbix)
 TEMPLATE_NAMES=(

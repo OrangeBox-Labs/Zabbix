@@ -24,7 +24,7 @@ NC='\033[0m'
 # ==============================================
 
 # Token de API de Zabbix (dejar vacio para preguntar)
-API_TOKEN="e47fd64883410c3c41e1515fe6ec7aca9ad9f316d671a71e95e353cd5a6780d5"
+API_TOKEN="TU_NUEVO_TOKEN_AQUI"
 
 # Servidor Zabbix (dejar vacio para preguntar)
 ZABBIX_SERVER="monitoreo.orangebox.cl"
