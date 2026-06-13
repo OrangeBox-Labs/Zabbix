@@ -25,8 +25,6 @@ Los scripts cubren desde la instalación completa del servidor Zabbix con optimi
 | install-zabbix-agent-vm.sh | Instalación/Reparación del Agente Zabbix para maquinas virtuales VMware RHEL (7/8/9/10) | ✅ Estable |
 | install_zabbix_openvpn_monitoring.sh | Monitoreo de certificados OpenVPN con LLD (Low Level Discovery) | ✅ Estable |
 
-## 📁 Estructura del Repositorio
-
 
 ## Instalación
 
@@ -101,7 +99,7 @@ Copyright (c) 2025-2026 Felipe Roman - OrangeBox Labs
 Permiso concedido gratuitamente a cualquier persona que obtenga una copia de este software y los archivos de documentación asociados, para utilizar el Software sin restricción, incluyendo sin limitación los derechos de usar, copiar, modificar, fusionar, publicar, distribuir, sublicenciar y/o vender copias del Software.
 
 ---
-**🤝 ¿Conoces una PyME que necesite hardening o auditoría?**  
+** ¿Conoces una PyME que necesite hardening o auditoría?**  
 Recomiéndanos. Ayudamos a empresas a proteger su infraestructura Linux.
 
 **¿Quieres más contenido?**
