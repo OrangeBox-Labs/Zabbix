@@ -444,8 +444,8 @@ install_from_repo() {
   rpm -Uvh $REPO_URL &>/dev/null || return 1
   yum clean all &>/dev/null
 
-  if yum install -y zabbix-agent &>/dev/null; then
-    yum install -y zabbix-agent2 &>/dev/null
+  if yum install -y zabbix-agent2 &>/dev/null; then
+    yum install -y zabbix-agent &>/dev/null
     return 0
   fi
   return 1
