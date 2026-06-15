@@ -127,9 +127,6 @@ zabbix_export:
                   width: '72'
                   height: '5'
                   fields:
-                    - type: INTEGER
-                      name: highlight_row
-                      value: '1'
                     - type: STRING
                       name: reference
                       value: JGIJM
@@ -172,6 +169,9 @@ zabbix_export:
                     - type: INTEGER
                       name: ds.0.color_palette
                       value: '0'
+                    - type: INTEGER
+                      name: ds.0.fill
+                      value: '0'
                     - type: STRING
                       name: ds.0.items.0
                       value: 'Zimbra Cola de correos'
@@ -188,11 +188,20 @@ zabbix_export:
                       name: ds.0.items.4
                       value: 'Zimbra Virus detectados'
                     - type: INTEGER
+                      name: ds.0.missingdatafunc
+                      value: '1'
+                    - type: INTEGER
                       name: ds.0.transparency
-                      value: '3'
+                      value: '0'
                     - type: INTEGER
                       name: ds.0.width
                       value: '2'
+                    - type: STRING
+                      name: lefty_static_units
+                      value: emails
+                    - type: INTEGER
+                      name: lefty_units
+                      value: '1'
                     - type: STRING
                       name: reference
                       value: NILSN
