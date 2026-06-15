@@ -2,12 +2,13 @@
 
 Colección de scripts para la instalación, configuración y automatización de Zabbix en entornos Linux empresariales.
 
+---
 ## Autor
 
 - **Felipe Roman**
 - Web: https://www.orangebox.cl
 - Email: froman@orangebox.cl
-
+---
 
 
 ## Descripción General
@@ -15,15 +16,6 @@ Colección de scripts para la instalación, configuración y automatización de 
 Este repositorio contiene un conjunto de scripts diseñados para simplificar y automatizar la implementación de Zabbix en entornos Red Hat Enterprise Linux (RHEL) y sus derivados (AlmaLinux, Rocky Linux, CentOS).
 
 Los scripts cubren desde la instalación completa del servidor Zabbix con optimizaciones de rendimiento, hasta la instalación de agentes en sistemas remotos y tareas automatizadas para el mantenimiento diario.
-
-## Scripts Disponibles
-
-| Script | Descripción | Estado |
-|--------|-------------|--------|
-| install-zabbix-server.sh | Instalación completa de Zabbix Server 7.4 con hardening, tuning y locales | ✅ Estable |
-| install-zabbix-agent2.sh | Instalación y configuración de Zabbix Agent 2 con TLS PSK para servidores Linux | ✅ Estable |
-| install-zabbix-agent-vm.sh | Instalación/Reparación del Agente Zabbix para maquinas virtuales VMware RHEL (7/8/9/10) | ✅ Estable |
-| install_zabbix_openvpn_monitoring.sh | Monitoreo de certificados OpenVPN con LLD (Low Level Discovery) | ✅ Estable |
 
 
 ## Instalación
