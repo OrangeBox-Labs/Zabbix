@@ -1,0 +1,201 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: 96cd065ae488483fbd54eca2801d836f
+      name: Templates/OrangeBox
+  templates:
+    - uuid: 9a77c270ae014505a2f5743116b23ba3
+      template: 'Zimbra Mail Server by OrangeBox'
+      name: 'Zimbra Mail Server by OrangeBox'
+      description: |
+        Monitoreo completo de servidor Zimbra. Incluye discovery de servicios, estado de procesos, cola de correos, estadisticas diarias y métricas adicionales. 
+        - Creado por: Felipe Roman 
+        www.orangebox.cl
+      groups:
+        - name: Templates/OrangeBox
+      items:
+        - uuid: 0b8b69ca46c944b58b61bccda3b44177
+          name: 'Zimbra Correos recibidos'
+          key: zimbra.mailstats.received
+          delay: 1h
+          history: 7d
+          units: emails
+          timeout: 15s
+        - uuid: d0ca84dba78d4684b9ea8366d0edae1c
+          name: 'Zimbra Correos enviados'
+          key: zimbra.mailstats.sent
+          delay: 1h
+          history: 7d
+          units: emails
+          timeout: 15s
+        - uuid: 2391cb492aea48ae8ce1302dbb1c2e2f
+          name: 'Zimbra Spam detectado'
+          key: zimbra.mailstats.spam
+          delay: 1h
+          history: 7d
+          units: emails
+          timeout: 15s
+        - uuid: 93018671355949ad8580d20084e3c9d7
+          name: 'Zimbra Virus detectados'
+          key: zimbra.mailstats.virus
+          delay: 1h
+          history: 7d
+          units: emails
+          timeout: 15s
+        - uuid: 0fa1f81e81a44a75891c65db20d3a30d
+          name: 'Zimbra Cola de correos'
+          key: zimbra.queue
+          delay: 10m
+          history: 7d
+          units: emails
+          timeout: 15s
+          triggers:
+            - uuid: 9ac0d2f0a6dc49b991a7e09691c97df1
+              expression: 'last(/Zimbra Mail Server by OrangeBox/zimbra.queue)>{$ZIMBRA.QUEUE.WARNING}'
+              name: 'Cola de correos Zimbra alta'
+              priority: WARNING
+            - uuid: f113efb81ae9494d9e4cfa00098d39f1
+              expression: 'last(/Zimbra Mail Server by OrangeBox/zimbra.queue)>{$ZIMBRA.QUEUE.CRITICAL}'
+              name: 'Cola de correos Zimbra critica'
+              priority: DISASTER
+        - uuid: 2ef7e155babd40068b68e9bf7408a022
+          name: 'Zimbra Version'
+          key: zimbra.version
+          delay: 1d
+          history: 7d
+          value_type: TEXT
+          timeout: 15s
+      discovery_rules:
+        - uuid: cbeeab01855a4fffbd57561931a2a6e8
+          name: 'Descubrimiento de servicios Zimbra'
+          key: zimbra.discovery
+          delay: 12h
+          filter:
+            conditions:
+              - macro: '{#ZIMBRA_SERVICE}'
+                value: '{$ZIMBRA.LLD.FILTER}'
+          item_prototypes:
+            - uuid: ea46e8fbda834518a6451b22bcf2e8d9
+              name: 'Servicio Zimbra {#ZIMBRA_SERVICE} estado'
+              key: 'zimbra.service.status[{#ZIMBRA_SERVICE}]'
+              delay: 3m
+              history: 7d
+              value_type: TEXT
+              preprocessing:
+                - type: STR_REPLACE
+                  parameters:
+                    - '1'
+                    - Running
+                - type: STR_REPLACE
+                  parameters:
+                    - '0'
+                    - Stopped
+                - type: STR_REPLACE
+                  parameters:
+                    - '-1'
+                    - Unknown
+              timeout: 15s
+              trigger_prototypes:
+                - uuid: 72d8013b2eea4d179543aaa23bed0041
+                  expression: 'last(/Zimbra Mail Server by OrangeBox/zimbra.service.status[{#ZIMBRA_SERVICE}],#2)="Unknown" and last(/Zimbra Mail Server by OrangeBox/zimbra.service.status[{#ZIMBRA_SERVICE}],#3)="Unknown"'
+                  name: 'Servicio Zimbra {#ZIMBRA_SERVICE} estado desconocido'
+                  priority: WARNING
+                  description: 'El servicio {#ZIMBRA_SERVICE} se encuentra en estado desconocido en el servidor Zimbra. Este servicio es necesario para el correcto funcionamiento del servidor de correo.'
+                - uuid: ed2279d42442407fa0e8aaca68aad378
+                  expression: 'last(/Zimbra Mail Server by OrangeBox/zimbra.service.status[{#ZIMBRA_SERVICE}],#2)="Stopped" and last(/Zimbra Mail Server by OrangeBox/zimbra.service.status[{#ZIMBRA_SERVICE}],#3)="Stopped"'
+                  name: 'Servicio Zimbra {#ZIMBRA_SERVICE} está detenido'
+                  priority: DISASTER
+                  description: 'El servicio {#ZIMBRA_SERVICE} se encuentra detenido en el servidor Zimbra. Este servicio es necesario para el correcto funcionamiento del servidor de correo.'
+      macros:
+        - macro: '{$ZIMBRA.LLD.FILTER}'
+          value: '.*'
+          description: 'Filtro para discovery de servicios'
+        - macro: '{$ZIMBRA.QUEUE.CRITICAL}'
+          value: '100'
+          description: 'Umbral critico para cola de correos'
+        - macro: '{$ZIMBRA.QUEUE.WARNING}'
+          value: '50'
+          description: 'Umbral warning para cola de correos'
+      dashboards:
+        - uuid: cba1c39b902a4e3fb9fb53408cbc4f10
+          name: 'Zimbra Mail Server Overview'
+          pages:
+            - widgets:
+                - type: problems
+                  name: 'Problemas activos en Zimbra'
+                  'y': '6'
+                  width: '72'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: highlight_row
+                      value: '1'
+                    - type: STRING
+                      name: reference
+                      value: JGIJM
+                    - type: INTEGER
+                      name: severities.0
+                      value: '0'
+                    - type: INTEGER
+                      name: severities.1
+                      value: '1'
+                    - type: INTEGER
+                      name: severities.2
+                      value: '2'
+                    - type: INTEGER
+                      name: severities.3
+                      value: '3'
+                    - type: INTEGER
+                      name: severities.4
+                      value: '4'
+                    - type: INTEGER
+                      name: severities.5
+                      value: '5'
+                    - type: INTEGER
+                      name: show
+                      value: '3'
+                    - type: INTEGER
+                      name: show_opdata
+                      value: '1'
+                    - type: INTEGER
+                      name: show_suppressed
+                      value: '1'
+                    - type: INTEGER
+                      name: show_timeline
+                      value: '0'
+                - type: svggraph
+                  name: 'Estadisticas de correo Zimbra'
+                  x: '1'
+                  width: '71'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: ds.0.color_palette
+                      value: '0'
+                    - type: STRING
+                      name: ds.0.items.0
+                      value: 'Zimbra Cola de correos'
+                    - type: STRING
+                      name: ds.0.items.1
+                      value: 'Zimbra Correos enviados'
+                    - type: STRING
+                      name: ds.0.items.2
+                      value: 'Zimbra Correos recibidos'
+                    - type: STRING
+                      name: ds.0.items.3
+                      value: 'Zimbra Spam detectado'
+                    - type: STRING
+                      name: ds.0.items.4
+                      value: 'Zimbra Virus detectados'
+                    - type: INTEGER
+                      name: ds.0.transparency
+                      value: '3'
+                    - type: INTEGER
+                      name: ds.0.width
+                      value: '2'
+                    - type: STRING
+                      name: reference
+                      value: NILSN
+                    - type: INTEGER
+                      name: righty
+                      value: '0'
