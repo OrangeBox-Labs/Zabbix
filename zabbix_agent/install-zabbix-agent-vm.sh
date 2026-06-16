@@ -26,6 +26,9 @@ ZABBIX_RELEASE="7.4.11"
 ZABBIX_BIN_URL="https://cdn.zabbix.com/zabbix/binaries/stable/${ZABBIX_VERSION}/${ZABBIX_RELEASE}/zabbix_agent-${ZABBIX_RELEASE}-linux-3.0-amd64-static.tar.gz"
 LOG_FILE="/var/log/zabbix_install.log"
 
+# Variable para trackear qué agente se instaló
+AGENT_INSTALLED=""
+
 # --- Colores ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -521,6 +524,7 @@ get_distribution() {
 install_from_repo() {
   log_step "Instalando Zabbix Agent desde repositorio oficial..."
 
+  # Determinar la URL del repo según la versión de RHEL
   case $OS_MAJOR_VER in
   10) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm" ;;
   9) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/9/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el9.noarch.rpm" ;;
@@ -529,13 +533,28 @@ install_from_repo() {
   *) return 1 ;;
   esac
 
+  # Instalar repositorio de Zabbix
   rpm -Uvh $REPO_URL &>/dev/null || return 1
   yum clean all &>/dev/null
 
+  # Intentar instalar zabbix-agent2 primero
+  log_step "Intentando instalar zabbix-agent2..."
   if yum install -y zabbix-agent2 &>/dev/null; then
-    yum install -y zabbix-agent &>/dev/null
+    log_info "✅ zabbix-agent2 instalado correctamente desde repositorio"
+    AGENT_INSTALLED="agent2"
     return 0
   fi
+
+  # Si falla agent2, intentar con zabbix-agent
+  log_warn "Fallo instalación de zabbix-agent2, intentando con zabbix-agent..."
+  if yum install -y zabbix-agent &>/dev/null; then
+    log_info "✅ zabbix-agent instalado correctamente desde repositorio"
+    AGENT_INSTALLED="agent"
+    return 0
+  fi
+
+  # Si ambos fallan, retornar error para usar binario
+  log_warn "Fallo instalación desde repositorio para ambos agentes"
   return 1
 }
 
@@ -545,10 +564,14 @@ install_from_binary() {
   local TMP_DIR=$(mktemp -d)
   cd $TMP_DIR
 
+  # Usar curl en lugar de wget
   curl -s -L --connect-timeout 60 --max-time 300 --retry 3 -o zabbix_agent-${ZABBIX_RELEASE}-linux-3.0-amd64-static.tar.gz $ZABBIX_BIN_URL || {
-    log_error "Fallo al descargar binario."
+    log_error "Fallo al descargar binario con curl."
+    cd /
+    rm -rf $TMP_DIR
     exit 1
   }
+
   tar -xzf zabbix_agent-${ZABBIX_RELEASE}-linux-3.0-amd64-static.tar.gz
 
   mkdir -p /etc/zabbix /var/log/zabbix /run/zabbix /var/run/zabbix
@@ -672,6 +695,8 @@ EOF
     fi
   fi
 
+  # El binario siempre instala zabbix-agent (no agent2)
+  AGENT_INSTALLED="agent"
   cd /
   rm -rf $TMP_DIR
 }
@@ -795,34 +820,42 @@ main() {
     install_from_binary
   fi
 
-  # Configurar agente
-  if [ -f "$ZABBIX_AGENT2_CONFIG" ]; then
+  log_info "Agente instalado: $AGENT_INSTALLED"
+
+  # Configurar el agente instalado
+  if [ "$AGENT_INSTALLED" = "agent2" ] && [ -f "$ZABBIX_AGENT2_CONFIG" ]; then
     log_step "Configurando Zabbix Agent 2..."
     sed -i "s/^Server=.*/Server=$RESOLVED_IP/" $ZABBIX_AGENT2_CONFIG
     sed -i "s/^ServerActive=.*/ServerActive=$RESOLVED_IP/" $ZABBIX_AGENT2_CONFIG
     mkdir -p /run/zabbix
     chown zabbix:zabbix /run/zabbix 2>/dev/null
-  fi
-  if [ -f "$ZABBIX_AGENT_CONFIG" ]; then
+
+    # Iniciar solo agent2
+    service_daemon_reload
+    service_control "enable" "zabbix-agent2" 2>/dev/null
+    service_control "restart" "zabbix-agent2" 2>/dev/null
+    sleep 2
+
+    # Verificar y reparar si es necesario
+    if ! service_is_active "zabbix-agent2"; then
+      fix_agent_errors "zabbix-agent2" "$ZABBIX_AGENT2_CONFIG"
+    fi
+
+  elif [ -f "$ZABBIX_AGENT_CONFIG" ]; then
+    # Si no es agent2 o falló la configuración de agent2, usar agent
     log_step "Configurando Zabbix Agent..."
     sed -i "s/^Server=.*/Server=$RESOLVED_IP/" $ZABBIX_AGENT_CONFIG
     sed -i "s/^ServerActive=.*/ServerActive=$RESOLVED_IP/" $ZABBIX_AGENT_CONFIG
     sed -i 's|^PidFile=.*|PidFile=/run/zabbix/zabbix_agentd.pid|' $ZABBIX_AGENT_CONFIG
-  fi
 
-  # Iniciar servicios
-  service_daemon_reload
-  service_control "enable" "zabbix-agent2" 2>/dev/null
-  service_control "enable" "zabbix-agent" 2>/dev/null
-  service_control "restart" "zabbix-agent2" 2>/dev/null
-  service_control "restart" "zabbix-agent" 2>/dev/null
-  sleep 2
+    # Iniciar solo agent
+    service_daemon_reload
+    service_control "enable" "zabbix-agent" 2>/dev/null
+    service_control "restart" "zabbix-agent" 2>/dev/null
+    sleep 2
 
-  # Reparar si es necesario
-  if ! service_is_active "zabbix-agent2" && ! service_is_active "zabbix-agent"; then
-    if [ -f "$ZABBIX_AGENT2_CONFIG" ]; then
-      fix_agent_errors "zabbix-agent2" "$ZABBIX_AGENT2_CONFIG"
-    else
+    # Verificar y reparar si es necesario
+    if ! service_is_active "zabbix-agent"; then
       fix_agent_errors "zabbix-agent" "$ZABBIX_AGENT_CONFIG"
     fi
   fi
