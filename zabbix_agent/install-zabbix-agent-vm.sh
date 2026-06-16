@@ -545,7 +545,7 @@ install_from_binary() {
   local TMP_DIR=$(mktemp -d)
   cd $TMP_DIR
 
-  wget -q --timeout=60 --tries=3 $ZABBIX_BIN_URL || {
+  curl -s -L --connect-timeout 60 --max-time 300 --retry 3 -o zabbix_agent-${ZABBIX_RELEASE}-linux-3.0-amd64-static.tar.gz $ZABBIX_BIN_URL || {
     log_error "Fallo al descargar binario."
     exit 1
   }
