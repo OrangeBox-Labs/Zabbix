@@ -413,7 +413,6 @@ get_distribution() {
     VER=$VERSION_ID
   else
     log_error "No se pudo determinar la distribución."
-    exit 1
   fi
 
   case $OS in
