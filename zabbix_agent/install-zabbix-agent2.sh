@@ -1,15 +1,15 @@
 #!/bin/bash
 
 # ==============================================
-# Script: install-zabbix-agent.sh
+# Script: install-zabbix-agent2.sh
 # Autor: Felipe Roman
 # Web: www.orangebox.cl
 # Email: froman@orangebox.cl
 # Descripcion: Instalacion de Zabbix Agent 7.4 en host remoto
 #              con registro automatico via API y TLS/PSK
 #              PRIMERO instala y configura el agente, SOLO despues registra
-#              Soporta: CentOS 7/8 (Vault), RHEL/AlmaLinux/Rocky 8/9/10
-#              Prioridad: Agent2 > Agent clasico > Binario estatico
+#              Soporta: CentOS 6/7/8, RHEL/AlmaLinux/Rocky 6/7/8/9/10
+#              Prioridad: Agent2 > Agent clasico
 # ==============================================
 
 RED='\033[0;31m'
@@ -55,9 +55,9 @@ DEBUG_MODE=false
 
 show_help() {
   echo -e "${GREEN}============================================${NC}"
-  echo -e "${GREEN}  Script: install-zabbix-agent.sh${NC}"
+  echo -e "${GREEN}  Script: install-zabbix-agent2.sh${NC}"
   echo -e "${GREEN}  Instalador de Agente Zabbix 7.4${NC}"
-  echo -e "${GREEN}  Soporta: CentOS 7/8, RHEL/AlmaLinux/Rocky 8/9/10${NC}"
+  echo -e "${GREEN}  Soporta: CentOS 6/7/8, RHEL/AlmaLinux/Rocky 6/7/8/9/10${NC}"
   echo -e "${GREEN}============================================${NC}\n"
 
   echo -e "${YELLOW}DESCRIPCIÓN:${NC}"
@@ -75,8 +75,8 @@ show_help() {
   echo -e "  ${GREEN}--help${NC}     - Mostrar esta ayuda\n"
 
   echo -e "${YELLOW}EJEMPLOS:${NC}"
-  echo -e "  ${GREEN}./install-zabbix-agent.sh --lan --auto${NC}\n"
-  echo -e "  ${GREEN}./install-zabbix-agent.sh --wan --debug${NC}\n"
+  echo -e "  ${GREEN}./install-zabbix-agent2.sh --lan --auto${NC}\n"
+  echo -e "  ${GREEN}./install-zabbix-agent2.sh --wan --debug${NC}\n"
 
   echo -e "${GREEN}============================================${NC}"
   echo -e "${GREEN}  🌐 https://www.orangebox.cl${NC}"
@@ -134,45 +134,65 @@ get_server_info() {
 
 detect_os() {
   log_step "Detectando sistema operativo..."
-  . /etc/os-release
-  OS=$ID
-  VER=$VERSION_ID
-  log_info "Sistema: $NAME $VERSION_ID"
 
-  if [ "$OS" = "centos" ] && [[ "$VER" =~ ^7 ]]; then
-    OS_FAMILY="centos7"
-    log_info "CentOS 7 detectado - usando repositorios Vault"
-  elif [ "$OS" = "centos" ] && [[ "$VER" =~ ^8 ]]; then
-    OS_FAMILY="centos8"
-    log_info "CentOS 8 detectado - usando repositorios Vault"
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+    VER=$VERSION_ID
+    log_info "Sistema: $NAME $VERSION_ID"
+  else
+    if [ -f /etc/redhat-release ]; then
+      OS="rhel"
+      VER=$(rpm -q --qf "%{VERSION}" $(rpm -q --whatprovides redhat-release) | cut -d. -f1)
+      log_info "Sistema: RHEL/CentOS $VER"
+    else
+      log_error "No se pudo determinar la distribución."
+    fi
+  fi
+
+  # Determinar versión mayor
+  OS_MAJOR_VER=$(echo $VER | cut -d. -f1)
+
+  # Casos especiales para CentOS
+  if [ "$OS" = "centos" ]; then
+    if [ "$OS_MAJOR_VER" -eq 7 ]; then
+      OS_FAMILY="centos7"
+      log_info "CentOS 7 detectado - usando repositorios Vault"
+    elif [ "$OS_MAJOR_VER" -eq 8 ]; then
+      OS_FAMILY="centos8"
+      log_info "CentOS 8 detectado - usando repositorios Vault"
+    elif [ "$OS_MAJOR_VER" -eq 6 ]; then
+      OS_FAMILY="centos6"
+      log_info "CentOS 6 detectado - usando repositorios Zabbix 7.0"
+    else
+      OS_FAMILY="rhel"
+    fi
   elif [ -f /etc/almalinux-release ]; then
     OS_FAMILY="almalinux"
-    ALMA_VERSION=$(grep -oE '[0-9]+' /etc/almalinux-release | head -1)
   elif [ -f /etc/redhat-release ]; then
     OS_FAMILY="rhel"
-    ALMA_VERSION=$(grep -oE '[0-9]+' /etc/redhat-release | head -1)
   else
     case $OS in
-    centos | rhel | almalinux | rocky | fedora | amzn | ol) OS_FAMILY="rhel" ;;
+    rhel | rocky | fedora | amzn | ol) OS_FAMILY="rhel" ;;
     debian | ubuntu | raspbian | linuxmint) OS_FAMILY="debian" ;;
     suse | opensuse | sles) OS_FAMILY="suse" ;;
     *) OS_FAMILY="unknown" ;;
     esac
-    ALMA_VERSION=$(echo $VER | cut -d. -f1)
   fi
 
-  log_debug "OS Family: $OS_FAMILY, Version: ${ALMA_VERSION:-7}"
+  log_debug "OS Family: $OS_FAMILY, Version: ${OS_MAJOR_VER:-7}"
 }
 
 # ==============================================
 # FUNCIONES DE MANEJO DE REPOSITORIOS
 # ==============================================
 
-REPO_BACKUP_DIR="/etc/yum.repos.d.backup.$$"
+REPO_BACKUP_DIR=""
 
 disable_all_repos() {
   log_step "Deshabilitando TODOS los repositorios existentes..."
 
+  REPO_BACKUP_DIR="/etc/yum.repos.d.backup.$$"
   mkdir -p "$REPO_BACKUP_DIR"
 
   for repo in /etc/yum.repos.d/*.repo; do
@@ -199,6 +219,19 @@ restore_all_repos() {
   else
     yum clean all >/dev/null 2>&1
   fi
+}
+
+setup_centos6_repos() {
+  log_step "Configurando repositorios para CentOS 6 (usando Zabbix 7.0)..."
+
+  # Instalar EPEL para CentOS 6
+  rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm 2>/dev/null || true
+
+  # Instalar repositorio Zabbix 7.0 (última versión que soporta EL6)
+  rpm -Uvh https://repo.zabbix.com/zabbix/7.0/rhel/6/x86_64/zabbix-release-latest-7.0.el6.noarch.rpm --nodeps 2>/dev/null
+
+  yum clean all >/dev/null 2>&1
+  log_info "Repositorios CentOS 6 configurados"
 }
 
 setup_centos7_repos() {
@@ -251,7 +284,21 @@ setup_rhel_repos() {
   local version="$1"
   log_step "Configurando repositorios para RHEL/AlmaLinux/Rocky $version..."
 
-  rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/rhel/${version}/noarch/zabbix-release-latest-7.4.el${version}.noarch.rpm --nodeps 2>/dev/null
+  if [ "$version" -eq 6 ]; then
+    # Para RHEL 6, usar Zabbix 7.0
+    rpm -Uvh https://repo.zabbix.com/zabbix/7.0/rhel/6/x86_64/zabbix-release-latest-7.0.el6.noarch.rpm --nodeps 2>/dev/null
+    rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm 2>/dev/null || true
+  else
+    # Para EL7/8/9/10, usar Zabbix 7.4
+    local ZABBIX_VERSION="7.4"
+    case $version in
+    10) rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm --nodeps 2>/dev/null ;;
+    9) rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/9/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el9.noarch.rpm --nodeps 2>/dev/null ;;
+    8) rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/8/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el8.noarch.rpm --nodeps 2>/dev/null ;;
+    7) rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/rhel/7/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el7.noarch.rpm --nodeps 2>/dev/null ;;
+    *) log_warn "Versión no soportada: $version" ;;
+    esac
+  fi
 
   if command -v dnf &>/dev/null; then
     dnf clean all >/dev/null 2>&1
@@ -294,6 +341,15 @@ install_zabbix_agent2() {
       log_info "Zabbix Agent 2 instalado exitosamente"
       return 0
     fi
+  else
+    if yum install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
+      AGENT_TYPE="zabbix_agent2"
+      AGENT_SERVICE="zabbix-agent2"
+      AGENT_BINARY="zabbix_agent2"
+      CONFIG_FILE="/etc/zabbix/zabbix_agent2.conf"
+      log_info "Zabbix Agent 2 instalado exitosamente"
+      return 0
+    fi
   fi
   log_warn "Zabbix Agent 2 no está disponible"
   return 1
@@ -325,43 +381,8 @@ install_zabbix_agent_legacy() {
   return 1
 }
 
-install_agent_from_binary() {
-  log_step "Instalando Zabbix Agent desde binario estático (último recurso)..."
-
-  local BINARY_URL="https://cdn.zabbix.com/zabbix/binaries/stable/7.4/7.4.11/zabbix_agent-7.4.11-linux-3.0-amd64-static.tar.gz"
-  local TMP_DIR="/tmp/zabbix_agent_binary_$$"
-
-  mkdir -p "$TMP_DIR"
-  cd "$TMP_DIR"
-
-  log_info "Descargando binario desde: $BINARY_URL"
-  curl -L -o zabbix_agent.tar.gz "$BINARY_URL" >>/tmp/zabbix_agent_install.log 2>&1
-
-  if [ $? -ne 0 ] || [ ! -f zabbix_agent.tar.gz ]; then
-    log_error "No se pudo descargar el binario"
-  fi
-
-  tar -xzf zabbix_agent.tar.gz >>/tmp/zabbix_agent_install.log 2>&1
-
-  # Copiar binarios
-  cp zabbix_agent/sbin/zabbix_agentd /usr/sbin/
-  cp zabbix_agent/bin/zabbix_get /usr/bin/
-  cp zabbix_agent/bin/zabbix_sender /usr/bin/
-
-  # Crear usuario si no existe
-  id -u zabbix &>/dev/null || useradd -r -s /sbin/nologin zabbix
-
-  AGENT_TYPE="zabbix_agentd"
-  AGENT_SERVICE="zabbix-agent"
-  AGENT_BINARY="zabbix_agentd"
-  CONFIG_FILE="/etc/zabbix/zabbix_agentd.conf"
-
-  log_info "Zabbix Agent instalado desde binario estático"
-  return 0
-}
-
 install_agent() {
-  log_step "Instalando Zabbix Agent (prioridad: Agent2 > Agent clásico > Binario estático)..."
+  log_step "Instalando Zabbix Agent (prioridad: Agent2 > Agent clásico)..."
 
   # Verificar si ya está instalado
   if command -v zabbix_agent2 &>/dev/null; then
@@ -381,28 +402,14 @@ install_agent() {
   fi
 
   # Configurar repositorios según versión e instalar
-  if [ "$OS_FAMILY" = "centos7" ]; then
+  if [ "$OS_FAMILY" = "centos6" ]; then
+    setup_centos6_repos
+  elif [ "$OS_FAMILY" = "centos7" ]; then
     setup_centos7_repos
-    if yum install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
-      AGENT_TYPE="zabbix_agent2"
-      AGENT_SERVICE="zabbix-agent2"
-      AGENT_BINARY="zabbix_agent2"
-      CONFIG_FILE="/etc/zabbix/zabbix_agent2.conf"
-      log_info "Zabbix Agent instalado exitosamente en CentOS 7"
-      return 0
-    fi
   elif [ "$OS_FAMILY" = "centos8" ]; then
     setup_centos8_repos
-    if dnf install -y zabbix-agent2 >>/tmp/zabbix_agent_install.log 2>&1; then
-      AGENT_TYPE="zabbix_agent2"
-      AGENT_SERVICE="zabbix-agent2"
-      AGENT_BINARY="zabbix_agent2"
-      CONFIG_FILE="/etc/zabbix/zabbix_agent2.conf"
-      log_info "Zabbix Agent instalado exitosamente en CentOS 8"
-      return 0
-    fi
   else
-    setup_rhel_repos "$ALMA_VERSION"
+    setup_rhel_repos "$OS_MAJOR_VER"
   fi
 
   # Intentar instalar Agent 2
@@ -412,12 +419,6 @@ install_agent() {
 
   # Intentar Agent clásico
   if install_zabbix_agent_legacy; then
-    return 0
-  fi
-
-  # Último recurso: binario estático
-  log_warn "No se pudo instalar desde repositorios, usando binario estático..."
-  if install_agent_from_binary; then
     return 0
   fi
 
@@ -445,7 +446,7 @@ configure_permissions() {
 }
 
 fix_pid_file() {
-  log_step "Corrigiendo archivo PID para systemd..."
+  log_step "Corrigiendo archivo PID..."
 
   mkdir -p /run/zabbix
   chown zabbix:zabbix /run/zabbix
@@ -498,10 +499,16 @@ TLSAccept=psk
 TLSPSKIdentity=${PSK_IDENTITY}
 TLSPSKFile=/etc/zabbix/ssl/psk.key
 
-# Archivo PID para systemd
+# Archivo PID
 PidFile=/run/zabbix/${AGENT_TYPE}.pid
-Include=/etc/zabbix/zabbix_agent2.d/*.conf
 EOF
+
+  # Agregar Include solo para Agent 2
+  if [ "$AGENT_TYPE" = "zabbix_agent2" ]; then
+    echo "Include=/etc/zabbix/zabbix_agent2.d/*.conf" >>"$CONFIG_FILE"
+  else
+    echo "Include=/etc/zabbix/zabbix_agentd.d/*.conf" >>"$CONFIG_FILE"
+  fi
 
   chown root:zabbix "$CONFIG_FILE"
   chmod 640 "$CONFIG_FILE"
@@ -512,18 +519,31 @@ EOF
 
 configure_firewall() {
   log_step "Configurando firewall..."
+
+  # Verificar si firewalld está activo (systemd)
   if command -v firewall-cmd &>/dev/null; then
     if systemctl is-active --quiet firewalld 2>/dev/null; then
       firewall-cmd --permanent --add-port=${ZABBIX_AGENT_PORT}/tcp >>/tmp/zabbix_agent_install.log 2>&1
       firewall-cmd --reload >>/tmp/zabbix_agent_install.log 2>&1
       log_info "Puerto ${ZABBIX_AGENT_PORT}/tcp abierto en firewalld"
+      return 0
     fi
-  elif command -v ufw &>/dev/null; then
-    ufw allow ${ZABBIX_AGENT_PORT}/tcp >>/tmp/zabbix_agent_install.log 2>&1
-    log_info "Puerto ${ZABBIX_AGENT_PORT}/tcp abierto en ufw"
-  else
-    log_warn "Firewall no detectado, configure manualmente el puerto ${ZABBIX_AGENT_PORT}"
   fi
+
+  # Verificar iptables (sysvinit)
+  if command -v iptables &>/dev/null; then
+    if ! iptables -L INPUT -n 2>/dev/null | grep -q "dpt:${ZABBIX_AGENT_PORT}"; then
+      iptables -I INPUT 1 -p tcp --dport ${ZABBIX_AGENT_PORT} -j ACCEPT
+      # Guardar reglas según distribución
+      if [ -f /etc/redhat-release ] || [ -f /etc/centos-release ]; then
+        iptables-save >/etc/sysconfig/iptables 2>/dev/null
+      fi
+      log_info "Puerto ${ZABBIX_AGENT_PORT}/tcp abierto en iptables"
+      return 0
+    fi
+  fi
+
+  log_warn "Firewall no configurado, asegure que el puerto ${ZABBIX_AGENT_PORT} esté abierto"
 }
 
 # ==============================================
@@ -535,9 +555,12 @@ start_agent() {
 
   fix_pid_file
 
-  if [ ! -f /usr/lib/systemd/system/${AGENT_SERVICE}.service ] && [ ! -f /etc/systemd/system/${AGENT_SERVICE}.service ]; then
-    log_warn "Servicio systemd no encontrado, creando..."
-    cat >/etc/systemd/system/${AGENT_SERVICE}.service <<EOF
+  # Detectar sistema de inicialización
+  if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+    # systemd
+    if [ ! -f /usr/lib/systemd/system/${AGENT_SERVICE}.service ] && [ ! -f /etc/systemd/system/${AGENT_SERVICE}.service ]; then
+      log_warn "Servicio systemd no encontrado, creando..."
+      cat >/etc/systemd/system/${AGENT_SERVICE}.service <<EOF
 [Unit]
 Description=Zabbix Agent
 After=network.target
@@ -554,27 +577,52 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
+      systemctl daemon-reload
+    fi
+
+    systemctl enable ${AGENT_SERVICE} >>/tmp/zabbix_agent_install.log 2>&1
+    systemctl restart ${AGENT_SERVICE} >>/tmp/zabbix_agent_install.log 2>&1
+    sleep 3
+
+    if systemctl is-active ${AGENT_SERVICE} &>/dev/null; then
+      log_info "Agente iniciado correctamente (systemd)"
+      return 0
+    fi
   fi
 
-  systemctl enable ${AGENT_SERVICE} >>/tmp/zabbix_agent_install.log 2>&1
-  systemctl restart ${AGENT_SERVICE} >>/tmp/zabbix_agent_install.log 2>&1
+  # sysvinit (CentOS 6 y otros)
+  if [ -f /etc/init.d/${AGENT_SERVICE} ]; then
+    service ${AGENT_SERVICE} restart >>/tmp/zabbix_agent_install.log 2>&1
+    sleep 3
+    if service ${AGENT_SERVICE} status &>/dev/null; then
+      log_info "Agente iniciado correctamente (sysvinit)"
+      return 0
+    fi
+  fi
 
-  sleep 3
-
-  if systemctl is-active ${AGENT_SERVICE} &>/dev/null; then
-    log_info "Agente iniciado correctamente"
+  # Si no hay systemd ni init script, iniciar manualmente
+  log_warn "Iniciando agente manualmente..."
+  /usr/sbin/${AGENT_BINARY} -c ${CONFIG_FILE}
+  sleep 2
+  if pgrep -f "${AGENT_BINARY}" >/dev/null; then
+    log_info "Agente iniciado correctamente (manual)"
     return 0
-  else
-    log_error "Error al iniciar agente"
   fi
+
+  log_error "Error al iniciar agente"
 }
 
 verify_agent_running() {
   log_step "Verificando que el agente está funcionando..."
 
-  if ! systemctl is-active ${AGENT_SERVICE} &>/dev/null; then
-    log_error "El agente no está corriendo. No se procederá con el registro en Zabbix"
+  if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+    if ! systemctl is-active ${AGENT_SERVICE} &>/dev/null; then
+      log_error "El agente no está corriendo. No se procederá con el registro en Zabbix"
+    fi
+  else
+    if ! pgrep -f "${AGENT_BINARY}" >/dev/null; then
+      log_error "El agente no está corriendo. No se procederá con el registro en Zabbix"
+    fi
   fi
 
   if command -v zabbix_get &>/dev/null; then
@@ -691,6 +739,7 @@ IP: ${AGENT_IP}
 Servidor: ${ZABBIX_SERVER}
 Tipo Agente: ${AGENT_TYPE}
 Archivo Config: ${CONFIG_FILE}
+Versión OS: ${OS_FAMILY:-rhel} ${OS_MAJOR_VER:-7}
 
 🔐 TLS/PSK:
   Identity: ${PSK_IDENTITY}
@@ -721,8 +770,15 @@ show_completion() {
   echo -e "  • Servidor: ${GREEN}${ZABBIX_SERVER}:${ZABBIX_SERVER_PORT}${NC}"
   echo -e "  • Tipo Agente: ${GREEN}${AGENT_TYPE}${NC}"
   echo -e "  • TLS/PSK: ${GREEN}Habilitado${NC}"
+  echo -e "  • Sistema: ${GREEN}${OS_FAMILY:-rhel} ${OS_MAJOR_VER:-7}${NC}"
   echo -e "\n${YELLOW}📋 VERIFICACIÓN:${NC}"
-  echo -e "  systemctl status ${AGENT_SERVICE}"
+
+  if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+    echo -e "  systemctl status ${AGENT_SERVICE}"
+  else
+    echo -e "  service ${AGENT_SERVICE} status"
+  fi
+
   echo -e "  tail -f /var/log/zabbix/${AGENT_TYPE}.log"
   echo -e "  zabbix_get -s ${AGENT_IP} -p ${ZABBIX_AGENT_PORT} -k system.hostname \\"
   echo -e "    --tls-connect psk \\"
@@ -775,8 +831,8 @@ done
 clear
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Instalador de Agente Zabbix 7.4${NC}"
-echo -e "${GREEN}  Soporta: CentOS 7/8, AlmaLinux/RHEL 8/9/10${NC}"
-echo -e "${GREEN}  Prioridad: Agent2 > Agent > Binario${NC}"
+echo -e "${GREEN}  Soporta: CentOS 6/7/8, AlmaLinux/RHEL 6/7/8/9/10${NC}"
+echo -e "${GREEN}  Prioridad: Agent2 > Agent${NC}"
 echo -e "${GREEN}  PRIMERO instala, LUEGO registra${NC}"
 echo -e "${GREEN}============================================${NC}\n"
 

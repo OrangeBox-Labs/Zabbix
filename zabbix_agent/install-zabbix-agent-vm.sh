@@ -21,9 +21,6 @@ TEMPLATE_NAMES=(
 # --- Archivos de configuración ---
 ZABBIX_AGENT_CONFIG="/etc/zabbix/zabbix_agentd.conf"
 ZABBIX_AGENT2_CONFIG="/etc/zabbix/zabbix_agent2.conf"
-ZABBIX_VERSION="7.4"
-ZABBIX_RELEASE="7.4.11"
-ZABBIX_BIN_URL="https://cdn.zabbix.com/zabbix/binaries/stable/${ZABBIX_VERSION}/${ZABBIX_RELEASE}/zabbix_agent-${ZABBIX_RELEASE}-linux-3.0-amd64-static.tar.gz"
 LOG_FILE="/var/log/zabbix_install.log"
 
 # Variable para trackear qué agente se instaló
@@ -75,12 +72,10 @@ service_control() {
     ;;
   "sysvinit")
     if [ "$action" = "enable" ]; then
-      # En sysvinit, "enable" significa añadir a los runlevels
       if command -v chkconfig &>/dev/null; then
         chkconfig "$service_name" on 2>/dev/null
         return $?
       elif [ -f "/etc/init.d/$service_name" ]; then
-        # Si existe el script, asumimos que está habilitado
         return 0
       fi
     elif [ "$action" = "is-active" ]; then
@@ -141,12 +136,10 @@ service_daemon_reload() {
 configure_firewalld() {
   local zabbix_server_ip="$1"
 
-  # Verificar si firewalld está instalado
   if ! command -v firewall-cmd &>/dev/null; then
     return 1
   fi
 
-  # Verificar si firewalld está activo (no masked o disabled)
   if ! systemctl is-active --quiet firewalld 2>/dev/null; then
     log_info "firewalld está instalado pero no activo. Omitiendo configuración."
     return 1
@@ -154,18 +147,14 @@ configure_firewalld() {
 
   log_info "firewalld detectado y activo. Configurando reglas..."
 
-  # Verificar si la regla ya existe en zona pública
   local zone=$(firewall-cmd --get-default-zone 2>/dev/null)
-  if [ -z "$zone" ]; then
-    zone="public"
-  fi
+  [ -z "$zone" ] && zone="public"
 
   if firewall-cmd --zone="$zone" --list-rich-rule 2>/dev/null | grep -q "source address=\"$zabbix_server_ip\" port port=\"10050\""; then
     log_info "Regla firewalld ya existente para $zabbix_server_ip"
     return 0
   fi
 
-  # Agregar la regla
   log_step "Agregando regla a firewalld: permitir $zabbix_server_ip al puerto 10050"
   firewall-cmd --permanent --zone="$zone" --add-rich-rule="rule family=\"ipv4\" source address=\"$zabbix_server_ip\" port protocol=\"tcp\" port=\"10050\" accept" 2>/dev/null
   firewall-cmd --reload 2>/dev/null
@@ -182,17 +171,14 @@ configure_firewalld() {
 # --- Función para guardar reglas de iptables ---
 save_iptables_rules() {
   if [ -f /etc/redhat-release ] || [ -f /etc/almalinux-release ] || [ -f /etc/rocky-release ] || [ -f /etc/centos-release ]; then
-    # RHEL/AlmaLinux/Rocky/CentOS
     if command -v iptables-save &>/dev/null; then
       iptables-save >/etc/sysconfig/iptables 2>/dev/null && log_info "Reglas iptables guardadas en /etc/sysconfig/iptables"
     fi
   elif [ -f /etc/debian_version ]; then
-    # Debian/Ubuntu
     if command -v iptables-save &>/dev/null; then
       iptables-save >/etc/iptables/rules.v4 2>/dev/null && log_info "Reglas iptables guardadas en /etc/iptables/rules.v4"
     fi
   else
-    # Intento genérico
     iptables-save >/etc/iptables.rules 2>/dev/null && log_info "Reglas iptables guardadas en /etc/iptables.rules"
   fi
 }
@@ -201,17 +187,14 @@ save_iptables_rules() {
 configure_iptables() {
   local zabbix_server_ip="$1"
 
-  # Verificar si iptables está instalado
   if ! command -v iptables &>/dev/null; then
     return 1
   fi
 
-  # Verificar si hay reglas de iptables (si no hay, posiblemente no esté en uso)
   if ! iptables -L -n 2>/dev/null | grep -q "Chain INPUT"; then
     return 1
   fi
 
-  # Verificar política actual de INPUT
   local input_policy=$(iptables -L INPUT -n 2>/dev/null | grep -i "Chain INPUT" | grep -o '(policy [A-Z]*)' | grep -o '[A-Z]*' | head -1)
 
   if [ -z "$input_policy" ]; then
@@ -221,21 +204,15 @@ configure_iptables() {
 
   log_info "Política actual de INPUT: $input_policy"
 
-  # Verificar si ya existe la regla
   if iptables -L INPUT -n 2>/dev/null | grep -q "ACCEPT.*tcp dpt:10050.*$zabbix_server_ip"; then
     log_info "Regla iptables ya existente para $zabbix_server_ip al puerto 10050"
     return 0
   fi
 
-  # Si la política es DROP o REJECT, agregar regla
   if [ "$input_policy" = "DROP" ] || [ "$input_policy" = "REJECT" ]; then
     log_step "Política INPUT en DROP/REJECT. Agregando regla para Zabbix Server..."
-
-    # Agregar regla en la posición 1 para que tenga prioridad
     iptables -I INPUT 1 -s "$zabbix_server_ip" -p tcp --dport 10050 -j ACCEPT
     log_info "Regla iptables agregada: iptables -I INPUT 1 -s $zabbix_server_ip -p tcp --dport 10050 -j ACCEPT"
-
-    # Guardar reglas
     save_iptables_rules
     return 0
   else
@@ -250,13 +227,11 @@ configure_firewall() {
 
   log_step "Configurando firewall para permitir conexiones desde Zabbix Server ($zabbix_server_ip)..."
 
-  # Intentar con firewalld primero
   if configure_firewalld "$zabbix_server_ip"; then
     log_info "Firewall configurado correctamente con firewalld"
     return 0
   fi
 
-  # Si firewalld no está activo, intentar con iptables
   if configure_iptables "$zabbix_server_ip"; then
     log_info "Firewall configurado correctamente con iptables"
     return 0
@@ -325,7 +300,6 @@ update_host_templates() {
   shift
   local template_ids=("$@")
 
-  # Construir JSON de templates
   local templates_json="["
   for i in "${!template_ids[@]}"; do
     if [ -n "${template_ids[$i]}" ]; then
@@ -501,14 +475,15 @@ get_distribution() {
     VER=$VERSION_ID
   else
     if [ -f /etc/redhat-release ]; then
-      OS=rhel
+      OS="rhel"
+      VER=$(rpm -q --qf "%{VERSION}" $(rpm -q --whatprovides redhat-release) | cut -d. -f1)
     else
       log_error "No se pudo determinar la distribución."
     fi
   fi
 
   case $OS in
-  rhel | centos | almalinux | rocky | ol | fedora)
+  rhel | centos | almalinux | rocky | ol | fedora | redhat)
     OS_FAMILY="rhel"
     ;;
   *)
@@ -520,28 +495,98 @@ get_distribution() {
   log_info "Distribución detectada: $OS $OS_MAJOR_VER"
 }
 
+# --- Función para manejar repositorios ---
+manage_repos() {
+  local action="$1"
+
+  # Directorio temporal para backups de repos
+  local REPO_BACKUP_DIR="/etc/yum.repos.d/backup_$(date +%Y%m%d_%H%M%S)"
+
+  case "$action" in
+  "backup")
+    log_step "Respaldando repositorios existentes..."
+    mkdir -p "$REPO_BACKUP_DIR"
+    if [ -d "/etc/yum.repos.d" ]; then
+      # Mover todos los .repo a backup, pero mantener los que empiecen con zabbix
+      for repo_file in /etc/yum.repos.d/*.repo; do
+        if [ -f "$repo_file" ] && [[ ! "$repo_file" =~ zabbix ]]; then
+          mv "$repo_file" "$REPO_BACKUP_DIR/" 2>/dev/null
+        fi
+      done
+      log_info "Repositorios respaldados en: $REPO_BACKUP_DIR"
+      echo "$REPO_BACKUP_DIR" >/tmp/zabbix_repo_backup_dir
+    fi
+    ;;
+  "restore")
+    if [ -f /tmp/zabbix_repo_backup_dir ]; then
+      local BACKUP_DIR=$(cat /tmp/zabbix_repo_backup_dir)
+      if [ -d "$BACKUP_DIR" ]; then
+        log_step "Restaurando repositorios..."
+        mv "$BACKUP_DIR"/*.repo /etc/yum.repos.d/ 2>/dev/null
+        rm -f /tmp/zabbix_repo_backup_dir
+        log_info "Repositorios restaurados"
+      fi
+    fi
+    ;;
+  esac
+}
+
 # --- Función para instalar desde repositorio ---
 install_from_repo() {
   log_step "Instalando Zabbix Agent desde repositorio oficial..."
 
   # Determinar la URL del repo según la versión de RHEL
-  case $OS_MAJOR_VER in
-  10) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm" ;;
-  9) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/9/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el9.noarch.rpm" ;;
-  8) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/8/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el8.noarch.rpm" ;;
-  7) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/rhel/7/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el7.noarch.rpm" ;;
-  *) return 1 ;;
-  esac
+  local REPO_URL=""
+
+  # Para RHEL/CentOS 6, usar Zabbix 7.0 (última versión que soporta EL6)
+  if [ "$OS_MAJOR_VER" -eq 6 ]; then
+    REPO_URL="https://repo.zabbix.com/zabbix/7.0/rhel/${OS_MAJOR_VER}/x86_64/zabbix-release-latest-7.0.el${OS_MAJOR_VER}.noarch.rpm"
+  else
+    # Para EL7/8/9/10, usar Zabbix 7.4
+    local ZABBIX_VERSION="7.4"
+    case $OS_MAJOR_VER in
+    10) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm" ;;
+    9) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/9/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el9.noarch.rpm" ;;
+    8) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/8/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el8.noarch.rpm" ;;
+    7) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/rhel/7/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el7.noarch.rpm" ;;
+    *) return 1 ;;
+    esac
+  fi
+
+  log_info "Usando repositorio: $REPO_URL"
+
+  # Backup de repositorios existentes
+  manage_repos "backup"
 
   # Instalar repositorio de Zabbix
-  rpm -Uvh $REPO_URL &>/dev/null || return 1
+  log_step "Instalando repositorio Zabbix..."
+  if ! rpm -Uvh $REPO_URL &>/dev/null; then
+    log_error "Fallo al instalar repositorio Zabbix"
+    manage_repos "restore"
+    return 1
+  fi
+
+  # Limpiar caché de yum
   yum clean all &>/dev/null
+
+  # Para CentOS 6, necesitamos instalar epel-release y algunas dependencias
+  if [ "$OS_MAJOR_VER" -eq 6 ]; then
+    log_step "Configurando dependencias para CentOS 6..."
+    # Instalar EPEL si no está
+    if ! rpm -q epel-release &>/dev/null; then
+      rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm 2>/dev/null || true
+    fi
+    yum clean all &>/dev/null
+  fi
 
   # Intentar instalar zabbix-agent2 primero
   log_step "Intentando instalar zabbix-agent2..."
   if yum install -y zabbix-agent2 &>/dev/null; then
     log_info "✅ zabbix-agent2 instalado correctamente desde repositorio"
     AGENT_INSTALLED="agent2"
+    # Configurar el archivo de configuración básico
+    configure_agent_config "$AGENT_INSTALLED"
+    manage_repos "restore"
     return 0
   fi
 
@@ -550,155 +595,42 @@ install_from_repo() {
   if yum install -y zabbix-agent &>/dev/null; then
     log_info "✅ zabbix-agent instalado correctamente desde repositorio"
     AGENT_INSTALLED="agent"
+    # Configurar el archivo de configuración básico
+    configure_agent_config "$AGENT_INSTALLED"
+    manage_repos "restore"
     return 0
   fi
 
-  # Si ambos fallan, retornar error para usar binario
+  # Si ambos fallan, restaurar repos y retornar error
   log_warn "Fallo instalación desde repositorio para ambos agentes"
+  manage_repos "restore"
   return 1
 }
 
-# --- Función para instalar desde binario ---
-install_from_binary() {
-  log_step "Instalando Zabbix Agent desde binario estático..."
-  local TMP_DIR=$(mktemp -d)
-  cd $TMP_DIR
+# --- Función para configurar el agente ---
+configure_agent_config() {
+  local agent_type="$1"
 
-  # Usar curl en lugar de wget
-  curl -s -L --connect-timeout 60 --max-time 300 --retry 3 -o zabbix_agent-${ZABBIX_RELEASE}-linux-3.0-amd64-static.tar.gz $ZABBIX_BIN_URL || {
-    log_error "Fallo al descargar binario con curl."
-    cd /
-    rm -rf $TMP_DIR
-    exit 1
-  }
-
-  tar -xzf zabbix_agent-${ZABBIX_RELEASE}-linux-3.0-amd64-static.tar.gz
-
-  mkdir -p /etc/zabbix /var/log/zabbix /run/zabbix /var/run/zabbix
-  cp sbin/zabbix_agentd /usr/sbin/
-  cp conf/zabbix_agentd.conf /etc/zabbix/
-
-  id -u zabbix &>/dev/null || useradd -r -s /sbin/nologin -d /var/lib/zabbix zabbix
-  chown -R zabbix:zabbix /etc/zabbix /var/log/zabbix /run/zabbix /var/run/zabbix
-
-  cat >$ZABBIX_AGENT_CONFIG <<EOF
-Server=$RESOLVED_IP
-ServerActive=$RESOLVED_IP
-Hostname=$(hostname -f 2>/dev/null || hostname)
-LogFile=/var/log/zabbix/zabbix_agentd.log
-LogFileSize=10
-PidFile=/run/zabbix/zabbix_agentd.pid
-Include=/etc/zabbix/zabbix_agentd.d/*.conf
-EOF
-
-  # Detectar sistema de inicialización
-  local init_system=$(detect_init_system)
-
-  if [ "$init_system" = "systemd" ]; then
-    # Crear servicio systemd
-    cat >/etc/systemd/system/zabbix-agent.service <<EOF
-[Unit]
-Description=Zabbix Agent
-After=network.target
-
-[Service]
-Type=forking
-User=zabbix
-Group=zabbix
-ExecStart=/usr/sbin/zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf
-ExecStop=/bin/kill -15 \$MAINPID
-PIDFile=/run/zabbix/zabbix_agentd.pid
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    service_daemon_reload
-    service_control "enable" "zabbix-agent"
-  else
-    # Crear script init.d para sysvinit
-    cat >/etc/init.d/zabbix-agent <<'EOF'
-#!/bin/bash
-# chkconfig: 345 95 5
-# description: Zabbix Agent daemon
-# processname: zabbix_agentd
-
-NAME=zabbix_agentd
-DAEMON=/usr/sbin/zabbix_agentd
-CONFIG=/etc/zabbix/zabbix_agentd.conf
-PIDFILE=/run/zabbix/zabbix_agentd.pid
-
-start() {
-    echo -n "Starting Zabbix Agent: "
-    $DAEMON -c $CONFIG
-    RETVAL=$?
-    echo
-    return $RETVAL
-}
-
-stop() {
-    echo -n "Stopping Zabbix Agent: "
-    kill -15 `cat $PIDFILE` 2>/dev/null
-    RETVAL=$?
-    echo
-    return $RETVAL
-}
-
-status() {
-    if [ -f $PIDFILE ]; then
-        PID=`cat $PIDFILE`
-        if ps -p $PID > /dev/null 2>&1; then
-            echo "Zabbix Agent is running (PID $PID)"
-            return 0
-        else
-            echo "Zabbix Agent is dead but pid file exists"
-            return 1
-        fi
-    else
-        echo "Zabbix Agent is stopped"
-        return 3
+  if [ "$agent_type" = "agent2" ] && [ -f "$ZABBIX_AGENT2_CONFIG" ]; then
+    log_step "Configurando Zabbix Agent 2..."
+    sed -i "s/^Server=.*/Server=$RESOLVED_IP/" $ZABBIX_AGENT2_CONFIG
+    sed -i "s/^ServerActive=.*/ServerActive=$RESOLVED_IP/" $ZABBIX_AGENT2_CONFIG
+    # Asegurar que Hostname esté configurado
+    if ! grep -q "^Hostname=" $ZABBIX_AGENT2_CONFIG; then
+      echo "Hostname=$(hostname -f 2>/dev/null || hostname)" >>$ZABBIX_AGENT2_CONFIG
     fi
-}
+    mkdir -p /run/zabbix
+    chown zabbix:zabbix /run/zabbix 2>/dev/null
 
-restart() {
-    stop
-    sleep 1
-    start
-}
-
-case "$1" in
-    start)
-        start
-        ;;
-    stop)
-        stop
-        ;;
-    restart)
-        restart
-        ;;
-    status)
-        status
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|restart|status}"
-        exit 1
-esac
-
-exit $?
-EOF
-    chmod +x /etc/init.d/zabbix-agent
-
-    # Habilitar servicio en runlevels (chkconfig)
-    if command -v chkconfig &>/dev/null; then
-      chkconfig --add zabbix-agent
-      chkconfig zabbix-agent on
+  elif [ "$agent_type" = "agent" ] && [ -f "$ZABBIX_AGENT_CONFIG" ]; then
+    log_step "Configurando Zabbix Agent..."
+    sed -i "s/^Server=.*/Server=$RESOLVED_IP/" $ZABBIX_AGENT_CONFIG
+    sed -i "s/^ServerActive=.*/ServerActive=$RESOLVED_IP/" $ZABBIX_AGENT_CONFIG
+    if ! grep -q "^Hostname=" $ZABBIX_AGENT_CONFIG; then
+      echo "Hostname=$(hostname -f 2>/dev/null || hostname)" >>$ZABBIX_AGENT_CONFIG
     fi
+    sed -i 's|^PidFile=.*|PidFile=/run/zabbix/zabbix_agentd.pid|' $ZABBIX_AGENT_CONFIG
   fi
-
-  # El binario siempre instala zabbix-agent (no agent2)
-  AGENT_INSTALLED="agent"
-  cd /
-  rm -rf $TMP_DIR
 }
 
 # --- Función para reparar errores del agente ---
@@ -777,12 +709,10 @@ main() {
     ZABBIX_VERSION_API=$(echo "$API_TEST" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
     log_info "API de Zabbix accesible (versión: $ZABBIX_VERSION_API)"
 
-    # Verificar token
     TOKEN_TEST=$(zabbix_api_call "user.get" "{\"output\": [\"userid\"], \"limit\": 1}")
     if echo "$TOKEN_TEST" | grep -q '"result"'; then
       log_info "Token de API válido"
 
-      # Obtener IDs de plantillas
       TEMPLATE_IDS=()
       for template_name in "${TEMPLATE_NAMES[@]}"; do
         template_id=$(get_template_id "$template_name")
@@ -797,8 +727,6 @@ main() {
       if [ ${#TEMPLATE_IDS[@]} -gt 0 ]; then
         GROUP_ID=$(get_group_id "Linux Servers")
         log_info "Grupo ID: $GROUP_ID"
-
-        # Registrar host en Zabbix
         register_host_in_zabbix "$LOCAL_HOSTNAME" "$LOCAL_IP" "$GROUP_ID" "${TEMPLATE_IDS[@]}"
       else
         log_warn "No se encontraron plantillas. Omitiendo registro en Zabbix."
@@ -816,45 +744,29 @@ main() {
   log_step "Procediendo con instalación del agente..."
 
   if ! install_from_repo; then
-    log_warn "Instalación desde repositorio fallida. Usando binario estático..."
-    install_from_binary
+    log_error "❌ Falló la instalación del agente desde repositorio"
+    exit 1
   fi
 
   log_info "Agente instalado: $AGENT_INSTALLED"
 
-  # Configurar el agente instalado
-  if [ "$AGENT_INSTALLED" = "agent2" ] && [ -f "$ZABBIX_AGENT2_CONFIG" ]; then
-    log_step "Configurando Zabbix Agent 2..."
-    sed -i "s/^Server=.*/Server=$RESOLVED_IP/" $ZABBIX_AGENT2_CONFIG
-    sed -i "s/^ServerActive=.*/ServerActive=$RESOLVED_IP/" $ZABBIX_AGENT2_CONFIG
-    mkdir -p /run/zabbix
-    chown zabbix:zabbix /run/zabbix 2>/dev/null
-
-    # Iniciar solo agent2
+  # Iniciar el agente instalado
+  if [ "$AGENT_INSTALLED" = "agent2" ]; then
     service_daemon_reload
     service_control "enable" "zabbix-agent2" 2>/dev/null
     service_control "restart" "zabbix-agent2" 2>/dev/null
     sleep 2
 
-    # Verificar y reparar si es necesario
     if ! service_is_active "zabbix-agent2"; then
       fix_agent_errors "zabbix-agent2" "$ZABBIX_AGENT2_CONFIG"
     fi
 
-  elif [ -f "$ZABBIX_AGENT_CONFIG" ]; then
-    # Si no es agent2 o falló la configuración de agent2, usar agent
-    log_step "Configurando Zabbix Agent..."
-    sed -i "s/^Server=.*/Server=$RESOLVED_IP/" $ZABBIX_AGENT_CONFIG
-    sed -i "s/^ServerActive=.*/ServerActive=$RESOLVED_IP/" $ZABBIX_AGENT_CONFIG
-    sed -i 's|^PidFile=.*|PidFile=/run/zabbix/zabbix_agentd.pid|' $ZABBIX_AGENT_CONFIG
-
-    # Iniciar solo agent
+  elif [ "$AGENT_INSTALLED" = "agent" ]; then
     service_daemon_reload
     service_control "enable" "zabbix-agent" 2>/dev/null
     service_control "restart" "zabbix-agent" 2>/dev/null
     sleep 2
 
-    # Verificar y reparar si es necesario
     if ! service_is_active "zabbix-agent"; then
       fix_agent_errors "zabbix-agent" "$ZABBIX_AGENT_CONFIG"
     fi
