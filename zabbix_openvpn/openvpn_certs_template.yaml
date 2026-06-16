@@ -1,0 +1,158 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: 96cd065ae488483fbd54eca2801d836f
+      name: Templates/OrangeBox
+  templates:
+    - uuid: e79ce92479104fa8b667ce4b593caa69
+      template: 'Openvpn certs by OrangeBox'
+      name: 'Openvpn certs by OrangeBox'
+      groups:
+        - name: Templates/OrangeBox
+      items:
+        - uuid: 4d4f515943d2495487e503f128ac8a37
+          name: 'OpenVPN: Certificates Status'
+          key: openvpn.certs.check
+          delay: 1d
+          value_type: TEXT
+      discovery_rules:
+        - uuid: 4726cb2b5d334ff5b18060bcd85a77cf
+          name: 'OpenVPN Certificates Discovery'
+          key: openvpn.certs.discovery
+          delay: 1h
+          item_prototypes:
+            - uuid: 5c2003a7d57d4c37a5661f46ff975e78
+              name: 'Certificate {#CERTNAME} days remaining'
+              key: 'openvpn.cert.days[{#CERTNAME}]'
+              delay: 1h
+              history: 90d
+              units: days
+              description: |
+                Certificado SSL {#CERTNAME} vence en menos de {$SSL_CERT.WARNING} dias.
+                
+                Renovar antes de que expire para evitar errores de seguridad.
+              trigger_prototypes:
+                - uuid: eac0ac33c90d47c19d417ea548d27a53
+                  expression: 'last(/Openvpn certs by OrangeBox/openvpn.cert.days[{#CERTNAME}])<15'
+                  name: 'OpenVPN: Certificate {#CERTNAME} expires soon (CRITICAL)'
+                  priority: HIGH
+                  tags:
+                    - tag: service
+                      value: openvpn-cert
+                    - tag: severity
+                      value: critical
+                - uuid: d6245a86b0ea424da88731e330fff21f
+                  expression: 'last(/Openvpn certs by OrangeBox/openvpn.cert.days[{#CERTNAME}])<30 and last(/Openvpn certs by OrangeBox/openvpn.cert.days[{#CERTNAME}])>=15'
+                  name: 'OpenVPN: Certificate {#CERTNAME} expires soon (WARNING)'
+                  priority: WARNING
+                  description: |
+                    Certificado SSL {#CERTNAME} vence en menos de {$SSL_CERT.WARNING} dias.
+                    
+                    Renovar antes de que expire para evitar errores de seguridad.
+                  tags:
+                    - tag: service
+                      value: openvpn-cert
+                    - tag: severity
+                      value: warning
+          graph_prototypes:
+            - uuid: 58c87c65cd6044faa67bf21bd38cf999
+              name: 'Certificate {#CERTNAME} days remaining'
+              yaxismax: '0'
+              graph_items:
+                - color: 1A7C11
+                  calc_fnc: ALL
+                  item:
+                    host: 'Openvpn certs by OrangeBox'
+                    key: 'openvpn.cert.days[{#CERTNAME}]'
+      dashboards:
+        - uuid: a9cc6dfe4e834def91e02a8514c3442a
+          name: 'OpenVPN Certificates Monitoring'
+          pages:
+            - widgets:
+                - type: svggraph
+                  name: '📊 Días restantes certificados OpenVPN'
+                  x: '2'
+                  'y': '1'
+                  width: '31'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: ds.0.axisy
+                      value: '1'
+                    - type: INTEGER
+                      name: ds.0.color_palette
+                      value: '0'
+                    - type: STRING
+                      name: ds.0.items.0
+                      value: 'Certificate * days remaining'
+                    - type: INTEGER
+                      name: ds.0.type
+                      value: '3'
+                    - type: INTEGER
+                      name: lefty
+                      value: '0'
+                    - type: STRING
+                      name: reference
+                      value: UHWIF
+                    - type: INTEGER
+                      name: rf_rate
+                      value: '900'
+                - type: problems
+                  name: 'Problemas de Certificados'
+                  x: '2'
+                  'y': '6'
+                  width: '70'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: highlight_row
+                      value: '1'
+                    - type: STRING
+                      name: reference
+                      value: PXLPP
+                    - type: INTEGER
+                      name: severities.0
+                      value: '0'
+                    - type: INTEGER
+                      name: severities.1
+                      value: '1'
+                    - type: INTEGER
+                      name: severities.2
+                      value: '2'
+                    - type: INTEGER
+                      name: severities.3
+                      value: '3'
+                    - type: INTEGER
+                      name: severities.4
+                      value: '4'
+                    - type: INTEGER
+                      name: severities.5
+                      value: '5'
+                    - type: INTEGER
+                      name: show_opdata
+                      value: '1'
+                    - type: INTEGER
+                      name: show_suppressed
+                      value: '1'
+                    - type: INTEGER
+                      name: show_timeline
+                      value: '0'
+                - type: itemcard
+                  name: 'Status General'
+                  x: '33'
+                  'y': '1'
+                  width: '39'
+                  height: '5'
+                  hide_header: 'YES'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Openvpn certs by OrangeBox'
+                        key: openvpn.certs.check
+                    - type: INTEGER
+                      name: sections.0
+                      value: '3'
+                    - type: INTEGER
+                      name: sparkline.fill
+                      value: '2'
