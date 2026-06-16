@@ -1,9 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Autor: Felipe Román froman@orangebox.cl
-#!/bin/bash
-# =============================================================================
-# Script de Instalación/Reparación del Agente Zabbix para RHEL (7/8/9/10)
+# Script de Instalación/Reparación del Agente Zabbix para RHEL (6/7/8/9/10)
 # Incluye registro automático en Zabbix vía API, vinculación de plantillas
 # y configuración de firewall (firewalld/iptables)
 # Uso: ./install_zabbix_agent.sh [IP_O_HOSTNAME_DEL_SERVIDOR_ZABBIX]
@@ -45,6 +43,92 @@ log_info() { log "${GREEN}✅${NC} $1"; }
 log_error() { log "${RED}❌${NC} $1"; }
 log_warn() { log "${YELLOW}⚠️${NC} $1"; }
 log_step() { log "${BLUE}🔧${NC} $1"; }
+
+# =============================================================================
+# FUNCIONES DE DETECCIÓN Y MANEJO DE SERVICIOS
+# =============================================================================
+
+# --- Función para detectar el sistema de inicialización ---
+detect_init_system() {
+  if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+    echo "systemd"
+  elif [ -d /etc/init.d ]; then
+    echo "sysvinit"
+  else
+    echo "unknown"
+  fi
+}
+
+# --- Función para manejar servicios de forma unificada ---
+service_control() {
+  local action="$1"
+  local service_name="$2"
+  local init_system=$(detect_init_system)
+
+  case "$init_system" in
+  "systemd")
+    systemctl "$action" "$service_name" 2>/dev/null
+    return $?
+    ;;
+  "sysvinit")
+    if [ "$action" = "enable" ]; then
+      # En sysvinit, "enable" significa añadir a los runlevels
+      if command -v chkconfig &>/dev/null; then
+        chkconfig "$service_name" on 2>/dev/null
+        return $?
+      elif [ -f "/etc/init.d/$service_name" ]; then
+        # Si existe el script, asumimos que está habilitado
+        return 0
+      fi
+    elif [ "$action" = "is-active" ]; then
+      if [ -f "/etc/init.d/$service_name" ]; then
+        /etc/init.d/"$service_name" status >/dev/null 2>&1
+        return $?
+      fi
+    else
+      if [ -f "/etc/init.d/$service_name" ]; then
+        /etc/init.d/"$service_name" "$action" >/dev/null 2>&1
+        return $?
+      fi
+    fi
+    return 1
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
+# --- Función para verificar si un servicio está activo ---
+service_is_active() {
+  local service_name="$1"
+  local init_system=$(detect_init_system)
+
+  case "$init_system" in
+  "systemd")
+    systemctl is-active --quiet "$service_name" 2>/dev/null
+    return $?
+    ;;
+  "sysvinit")
+    if [ -f "/etc/init.d/$service_name" ]; then
+      /etc/init.d/"$service_name" status >/dev/null 2>&1
+      return $?
+    fi
+    return 1
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
+# --- Función para recargar daemons (solo systemd) ---
+service_daemon_reload() {
+  local init_system=$(detect_init_system)
+  if [ "$init_system" = "systemd" ]; then
+    systemctl daemon-reload 2>/dev/null
+  fi
+}
 
 # =============================================================================
 # FUNCIONES DE FIREWALL
@@ -402,6 +486,7 @@ precheck_and_resolve() {
   log_info "=== RESUMEN DE CONFIGURACIÓN ==="
   log_info "Servidor Zabbix: $RESOLVED_IP"
   log_info "Hostname local: $(hostname -f 2>/dev/null || hostname)"
+  log_info "Init system: $(detect_init_system)"
   echo ""
 }
 
@@ -412,7 +497,11 @@ get_distribution() {
     OS=$ID
     VER=$VERSION_ID
   else
-    log_error "No se pudo determinar la distribución."
+    if [ -f /etc/redhat-release ]; then
+      OS=rhel
+    else
+      log_error "No se pudo determinar la distribución."
+    fi
   fi
 
   case $OS in
@@ -479,7 +568,12 @@ PidFile=/run/zabbix/zabbix_agentd.pid
 Include=/etc/zabbix/zabbix_agentd.d/*.conf
 EOF
 
-  cat >/etc/systemd/system/zabbix-agent.service <<EOF
+  # Detectar sistema de inicialización
+  local init_system=$(detect_init_system)
+
+  if [ "$init_system" = "systemd" ]; then
+    # Crear servicio systemd
+    cat >/etc/systemd/system/zabbix-agent.service <<EOF
 [Unit]
 Description=Zabbix Agent
 After=network.target
@@ -496,8 +590,88 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 EOF
+    service_daemon_reload
+    service_control "enable" "zabbix-agent"
+  else
+    # Crear script init.d para sysvinit
+    cat >/etc/init.d/zabbix-agent <<'EOF'
+#!/bin/bash
+# chkconfig: 345 95 5
+# description: Zabbix Agent daemon
+# processname: zabbix_agentd
 
-  systemctl daemon-reload
+NAME=zabbix_agentd
+DAEMON=/usr/sbin/zabbix_agentd
+CONFIG=/etc/zabbix/zabbix_agentd.conf
+PIDFILE=/run/zabbix/zabbix_agentd.pid
+
+start() {
+    echo -n "Starting Zabbix Agent: "
+    $DAEMON -c $CONFIG
+    RETVAL=$?
+    echo
+    return $RETVAL
+}
+
+stop() {
+    echo -n "Stopping Zabbix Agent: "
+    kill -15 `cat $PIDFILE` 2>/dev/null
+    RETVAL=$?
+    echo
+    return $RETVAL
+}
+
+status() {
+    if [ -f $PIDFILE ]; then
+        PID=`cat $PIDFILE`
+        if ps -p $PID > /dev/null 2>&1; then
+            echo "Zabbix Agent is running (PID $PID)"
+            return 0
+        else
+            echo "Zabbix Agent is dead but pid file exists"
+            return 1
+        fi
+    else
+        echo "Zabbix Agent is stopped"
+        return 3
+    fi
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        restart
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+esac
+
+exit $?
+EOF
+    chmod +x /etc/init.d/zabbix-agent
+
+    # Habilitar servicio en runlevels (chkconfig)
+    if command -v chkconfig &>/dev/null; then
+      chkconfig --add zabbix-agent
+      chkconfig zabbix-agent on
+    fi
+  fi
+
   cd /
   rm -rf $TMP_DIR
 }
@@ -528,13 +702,13 @@ fix_agent_errors() {
     useradd -r -s /sbin/nologin -d /var/lib/zabbix zabbix
   fi
 
-  systemctl daemon-reload
-  systemctl stop "$service_name" 2>/dev/null
+  service_daemon_reload
+  service_control "stop" "$service_name" 2>/dev/null
   sleep 1
-  systemctl start "$service_name"
+  service_control "start" "$service_name"
   sleep 2
 
-  if systemctl is-active --quiet "$service_name"; then
+  if service_is_active "$service_name"; then
     log_info "Servicio $service_name reparado exitosamente."
     return 0
   else
@@ -637,15 +811,15 @@ main() {
   fi
 
   # Iniciar servicios
-  systemctl daemon-reload
-  systemctl enable zabbix-agent2 2>/dev/null
-  systemctl enable zabbix-agent 2>/dev/null
-  systemctl restart zabbix-agent2 2>/dev/null
-  systemctl restart zabbix-agent 2>/dev/null
+  service_daemon_reload
+  service_control "enable" "zabbix-agent2" 2>/dev/null
+  service_control "enable" "zabbix-agent" 2>/dev/null
+  service_control "restart" "zabbix-agent2" 2>/dev/null
+  service_control "restart" "zabbix-agent" 2>/dev/null
   sleep 2
 
   # Reparar si es necesario
-  if ! systemctl is-active --quiet zabbix-agent2 && ! systemctl is-active --quiet zabbix-agent; then
+  if ! service_is_active "zabbix-agent2" && ! service_is_active "zabbix-agent"; then
     if [ -f "$ZABBIX_AGENT2_CONFIG" ]; then
       fix_agent_errors "zabbix-agent2" "$ZABBIX_AGENT2_CONFIG"
     else
@@ -656,17 +830,17 @@ main() {
   # Verificación final
   echo ""
   log_step "Verificación final..."
-  if systemctl is-active --quiet zabbix-agent2 || systemctl is-active --quiet zabbix-agent; then
+  if service_is_active "zabbix-agent2" || service_is_active "zabbix-agent"; then
     log_info "✅ Zabbix Agent está funcionando correctamente."
     log_info "   Servidor configurado: $RESOLVED_IP"
-    if systemctl is-active --quiet zabbix-agent2; then
+    if service_is_active "zabbix-agent2"; then
       log_info "   Versión: Agent2"
     else
       log_info "   Versión: Agent"
     fi
   else
     log_error "❌ No se pudo iniciar Zabbix Agent."
-    log_warn "Revisa manualmente con: systemctl status zabbix-agent"
+    log_warn "Revisa manualmente el estado del servicio."
   fi
 
   echo ""
