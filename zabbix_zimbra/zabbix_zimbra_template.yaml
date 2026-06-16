@@ -121,49 +121,9 @@ zabbix_export:
           name: 'Zimbra Mail Server Overview'
           pages:
             - widgets:
-                - type: problems
-                  name: 'Problemas activos en Zimbra'
-                  'y': '6'
-                  width: '72'
-                  height: '5'
-                  fields:
-                    - type: STRING
-                      name: reference
-                      value: JGIJM
-                    - type: INTEGER
-                      name: severities.0
-                      value: '0'
-                    - type: INTEGER
-                      name: severities.1
-                      value: '1'
-                    - type: INTEGER
-                      name: severities.2
-                      value: '2'
-                    - type: INTEGER
-                      name: severities.3
-                      value: '3'
-                    - type: INTEGER
-                      name: severities.4
-                      value: '4'
-                    - type: INTEGER
-                      name: severities.5
-                      value: '5'
-                    - type: INTEGER
-                      name: show
-                      value: '3'
-                    - type: INTEGER
-                      name: show_opdata
-                      value: '1'
-                    - type: INTEGER
-                      name: show_suppressed
-                      value: '1'
-                    - type: INTEGER
-                      name: show_timeline
-                      value: '0'
                 - type: svggraph
                   name: 'Estadisticas de correo Zimbra'
-                  x: '1'
-                  width: '71'
+                  width: '72'
                   height: '6'
                   fields:
                     - type: INTEGER
@@ -207,4 +167,40 @@ zabbix_export:
                       value: NILSN
                     - type: INTEGER
                       name: righty
+                      value: '0'
+                - type: problems
+                  name: 'Problemas activos en Zimbra'
+                  'y': '6'
+                  width: '72'
+                  height: '5'
+                  fields:
+                    - type: STRING
+                      name: reference
+                      value: JGIJM
+                    - type: INTEGER
+                      name: severities.0
+                      value: '0'
+                    - type: INTEGER
+                      name: severities.1
+                      value: '1'
+                    - type: INTEGER
+                      name: severities.2
+                      value: '2'
+                    - type: INTEGER
+                      name: severities.3
+                      value: '3'
+                    - type: INTEGER
+                      name: severities.4
+                      value: '4'
+                    - type: INTEGER
+                      name: severities.5
+                      value: '5'
+                    - type: INTEGER
+                      name: show_opdata
+                      value: '1'
+                    - type: INTEGER
+                      name: show_suppressed
+                      value: '1'
+                    - type: INTEGER
+                      name: show_timeline
                       value: '0'
