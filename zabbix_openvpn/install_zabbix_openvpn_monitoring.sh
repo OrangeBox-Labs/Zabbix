@@ -113,9 +113,10 @@ detect_cert_dir() {
       "/etc/openvpn/keys"
     )
 
-    for PATH in "${COMMON_PATHS[@]}"; do
-      if [ -d "$PATH" ] && [ "$(ls -A "$PATH"/*.crt 2>/dev/null | wc -l)" -gt 0 ]; then
-        FOUND_DIR="$PATH"
+    for CANDIDATE in "${COMMON_PATHS[@]}"; do
+      if [ -d "$CANDIDATE" ] && [ "$(ls -A "$CANDIDATE"/*.crt 2>/dev/null | wc -l)" -gt 0 ]; then
+        FOUND_DIR="$CANDIDATE"
+        echo "encontrado $CANDIDATE"
         break
       fi
     done
