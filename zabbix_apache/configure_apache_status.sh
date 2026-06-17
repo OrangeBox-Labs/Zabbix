@@ -36,13 +36,16 @@ if [ -f "$STATUS_FILE" ] && grep -q "server-status" "$STATUS_FILE" 2>/dev/null; 
 else
   # Crear configuración
   cat >"$STATUS_FILE" <<'EOF'
-<Location /server-status>
-    SetHandler server-status
-    Require local
-    Require ip 127.0.0.1
-    Require ip ::1
-</Location>
-ExtendedStatus On
+  ExtendedStatus On
+
+<VirtualHost 127.0.0.1:80>
+    ServerName localhost
+
+    <Location /server-status>
+        SetHandler server-status
+        Require local
+    </Location>
+</VirtualHost>
 EOF
   echo -e "${GREEN}✅ Archivo creado: $STATUS_FILE${NC}"
 fi
