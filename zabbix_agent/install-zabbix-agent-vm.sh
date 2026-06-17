@@ -25,6 +25,8 @@ LOG_FILE="/var/log/zabbix_install.log"
 
 # Variable para trackear qué agente se instaló
 AGENT_INSTALLED=""
+DISTRO_TYPE=""
+ZABBIX_VERSION_INSTALLED=""
 
 # --- Colores ---
 RED='\033[0;31m'
@@ -493,13 +495,225 @@ get_distribution() {
 
   OS_MAJOR_VER=$(echo $VER | cut -d. -f1)
   log_info "Distribución detectada: $OS $OS_MAJOR_VER"
+
+  # Determinar tipo de distribución
+  get_distribution_type
 }
 
-# --- Función para manejar repositorios ---
+# --- Función para determinar el tipo de distribución ---
+get_distribution_type() {
+  # Detectar si es CentOS (EOL) o AlmaLinux/Rocky/RHEL (activos)
+  if [ "$OS" = "centos" ]; then
+    if [ "$OS_MAJOR_VER" -eq 6 ] || [ "$OS_MAJOR_VER" -eq 7 ] || [ "$OS_MAJOR_VER" -eq 8 ]; then
+      DISTRO_TYPE="centos_eol"
+    else
+      DISTRO_TYPE="centos"
+    fi
+  elif [ "$OS" = "almalinux" ] || [ "$OS" = "rocky" ] || [ "$OS" = "rhel" ]; then
+    DISTRO_TYPE="active"
+  else
+    DISTRO_TYPE="unknown"
+  fi
+  log_info "Tipo de distribución: $DISTRO_TYPE"
+}
+
+# --- Función para configurar repositorios para CentOS 6 (EOL) ---
+configure_centos6_repos() {
+  log_step "Configurando repositorios para CentOS 6 (EOL)..."
+
+  # Crear backup de repos existentes si no existe
+  if [ ! -d /etc/yum.repos.d/backup_original ]; then
+    mkdir -p /etc/yum.repos.d/backup_original
+    cp -r /etc/yum.repos.d/*.repo /etc/yum.repos.d/backup_original/ 2>/dev/null
+  fi
+
+  # Eliminar repos existentes para limpiar
+  rm -f /etc/yum.repos.d/*.repo
+
+  # Configurar repositorio Vault para CentOS 6
+  cat >/etc/yum.repos.d/CentOS-Base.repo <<'EOF'
+[base]
+name=CentOS-6 - Base
+baseurl=http://vault.centos.org/6.10/os/x86_64/
+gpgcheck=1
+gpgkey=http://vault.centos.org/6.10/os/x86_64/RPM-GPG-KEY-CentOS-6
+enabled=1
+
+[updates]
+name=CentOS-6 - Updates
+baseurl=http://vault.centos.org/6.10/updates/x86_64/
+gpgcheck=1
+gpgkey=http://vault.centos.org/6.10/os/x86_64/RPM-GPG-KEY-CentOS-6
+enabled=1
+
+[extras]
+name=CentOS-6 - Extras
+baseurl=http://vault.centos.org/6.10/extras/x86_64/
+gpgcheck=1
+gpgkey=http://vault.centos.org/6.10/os/x86_64/RPM-GPG-KEY-CentOS-6
+enabled=1
+EOF
+
+  # Limpiar caché
+  yum clean all &>/dev/null
+  rm -rf /var/cache/yum/* &>/dev/null
+
+  log_info "Repositorios CentOS 6 configurados correctamente"
+}
+
+# --- Función para configurar repositorios para CentOS 7 (EOL) ---
+configure_centos7_repos() {
+  log_step "Configurando repositorios para CentOS 7 (EOL)..."
+
+  # Crear backup de repos existentes si no existe
+  if [ ! -d /etc/yum.repos.d/backup_original ]; then
+    mkdir -p /etc/yum.repos.d/backup_original
+    cp -r /etc/yum.repos.d/*.repo /etc/yum.repos.d/backup_original/ 2>/dev/null
+  fi
+
+  # Eliminar repos existentes para limpiar
+  rm -f /etc/yum.repos.d/*.repo
+
+  # Configurar repositorio Base (Vault)
+  cat >/etc/yum.repos.d/CentOS-Base.repo <<'EOF'
+[base]
+name=CentOS-7 - Base
+baseurl=http://vault.centos.org/7.9.2009/os/x86_64/
+gpgcheck=1
+gpgkey=http://vault.centos.org/7.9.2009/os/x86_64/RPM-GPG-KEY-CentOS-7
+enabled=1
+
+[updates]
+name=CentOS-7 - Updates
+baseurl=http://vault.centos.org/7.9.2009/updates/x86_64/
+gpgcheck=1
+gpgkey=http://vault.centos.org/7.9.2009/os/x86_64/RPM-GPG-KEY-CentOS-7
+enabled=1
+
+[extras]
+name=CentOS-7 - Extras
+baseurl=http://vault.centos.org/7.9.2009/extras/x86_64/
+gpgcheck=1
+gpgkey=http://vault.centos.org/7.9.2009/os/x86_64/RPM-GPG-KEY-CentOS-7
+enabled=1
+
+[centosplus]
+name=CentOS-7 - Plus
+baseurl=http://vault.centos.org/7.9.2009/centosplus/x86_64/
+gpgcheck=1
+gpgkey=http://vault.centos.org/7.9.2009/os/x86_64/RPM-GPG-KEY-CentOS-7
+enabled=0
+EOF
+
+  # Configurar EPEL
+  cat >/etc/yum.repos.d/epel.repo <<'EOF'
+[epel]
+name=Extra Packages for Enterprise Linux 7 - x86_64
+baseurl=http://download.fedoraproject.org/pub/epel/7/x86_64/
+gpgcheck=0
+enabled=1
+EOF
+
+  # Instalar EPEL release manualmente si es necesario
+  if ! rpm -q epel-release &>/dev/null; then
+    log_step "Instalando epel-release..."
+    rpm -Uvh http://download.fedoraproject.org/pub/epel/7/x86_64/Packages/e/epel-release-7-14.noarch.rpm 2>/dev/null || true
+  fi
+
+  # Limpiar caché de yum
+  yum clean all &>/dev/null
+  rm -rf /var/cache/yum/* &>/dev/null
+
+  log_info "Repositorios CentOS 7 configurados correctamente"
+}
+
+# --- Función para configurar repositorios para CentOS 8 (EOL) ---
+configure_centos8_repos() {
+  log_step "Configurando repositorios para CentOS 8 (EOL)..."
+
+  # Crear backup de repos existentes si no existe
+  if [ ! -d /etc/yum.repos.d/backup_original ]; then
+    mkdir -p /etc/yum.repos.d/backup_original
+    cp -r /etc/yum.repos.d/*.repo /etc/yum.repos.d/backup_original/ 2>/dev/null
+  fi
+
+  # Eliminar repos existentes para limpiar
+  rm -f /etc/yum.repos.d/*.repo
+
+  # Configurar repositorio Vault para CentOS 8
+  cat >/etc/yum.repos.d/CentOS-Base.repo <<'EOF'
+[base]
+name=CentOS-8 - Base
+baseurl=http://vault.centos.org/8.5.2111/BaseOS/x86_64/os/
+gpgcheck=1
+gpgkey=http://vault.centos.org/8.5.2111/BaseOS/x86_64/os/RPM-GPG-KEY-CentOS-Official
+enabled=1
+
+[appstream]
+name=CentOS-8 - AppStream
+baseurl=http://vault.centos.org/8.5.2111/AppStream/x86_64/os/
+gpgcheck=1
+gpgkey=http://vault.centos.org/8.5.2111/BaseOS/x86_64/os/RPM-GPG-KEY-CentOS-Official
+enabled=1
+
+[extras]
+name=CentOS-8 - Extras
+baseurl=http://vault.centos.org/8.5.2111/extras/x86_64/os/
+gpgcheck=1
+gpgkey=http://vault.centos.org/8.5.2111/BaseOS/x86_64/os/RPM-GPG-KEY-CentOS-Official
+enabled=1
+
+[powertools]
+name=CentOS-8 - PowerTools
+baseurl=http://vault.centos.org/8.5.2111/PowerTools/x86_64/os/
+gpgcheck=1
+gpgkey=http://vault.centos.org/8.5.2111/BaseOS/x86_64/os/RPM-GPG-KEY-CentOS-Official
+enabled=1
+EOF
+
+  # Instalar EPEL para CentOS 8
+  cat >/etc/yum.repos.d/epel.repo <<'EOF'
+[epel]
+name=Extra Packages for Enterprise Linux 8 - x86_64
+baseurl=http://download.fedoraproject.org/pub/epel/8/Everything/x86_64/
+gpgcheck=0
+enabled=1
+
+[epel-modular]
+name=Extra Packages for Enterprise Linux Modular 8 - x86_64
+baseurl=http://download.fedoraproject.org/pub/epel/8/Modular/x86_64/
+gpgcheck=0
+enabled=1
+EOF
+
+  # Limpiar caché de yum
+  yum clean all &>/dev/null
+  rm -rf /var/cache/yum/* &>/dev/null
+
+  log_info "Repositorios CentOS 8 configurados correctamente"
+}
+
+# --- Función para verificar repositorios ---
+check_repositories() {
+  log_step "Verificando repositorios disponibles..."
+
+  # Intentar hacer un yum repolist para verificar
+  local repolist=$(yum repolist 2>&1)
+
+  if echo "$repolist" | grep -q "Error"; then
+    log_warn "Problemas detectados con los repositorios:"
+    echo "$repolist" | grep -i "error" | head -5
+    log_warn "Intentando continuar con la instalación..."
+  else
+    log_info "Repositorios verificados correctamente"
+    local repo_count=$(echo "$repolist" | grep -E "^repo\s+id" -A 100 | grep -c "^[a-zA-Z]")
+    log_info "Repositorios activos: $repo_count"
+  fi
+}
+
+# --- Función para manejar repositorios (backup/restore) ---
 manage_repos() {
   local action="$1"
-
-  # Directorio temporal para backups de repos
   local REPO_BACKUP_DIR="/etc/yum.repos.d/backup_$(date +%Y%m%d_%H%M%S)"
 
   case "$action" in
@@ -507,9 +721,8 @@ manage_repos() {
     log_step "Respaldando repositorios existentes..."
     mkdir -p "$REPO_BACKUP_DIR"
     if [ -d "/etc/yum.repos.d" ]; then
-      # Mover todos los .repo a backup, pero mantener los que empiecen con zabbix
       for repo_file in /etc/yum.repos.d/*.repo; do
-        if [ -f "$repo_file" ] && [[ ! "$repo_file" =~ zabbix ]]; then
+        if [ -f "$repo_file" ]; then
           mv "$repo_file" "$REPO_BACKUP_DIR/" 2>/dev/null
         fi
       done
@@ -522,9 +735,16 @@ manage_repos() {
       local BACKUP_DIR=$(cat /tmp/zabbix_repo_backup_dir)
       if [ -d "$BACKUP_DIR" ]; then
         log_step "Restaurando repositorios..."
-        mv "$BACKUP_DIR"/*.repo /etc/yum.repos.d/ 2>/dev/null
+        # Si existe backup original, restaurarlo
+        if [ -d /etc/yum.repos.d/backup_original ]; then
+          rm -f /etc/yum.repos.d/*.repo
+          cp /etc/yum.repos.d/backup_original/*.repo /etc/yum.repos.d/ 2>/dev/null
+        else
+          mv "$BACKUP_DIR"/*.repo /etc/yum.repos.d/ 2>/dev/null
+        fi
         rm -f /tmp/zabbix_repo_backup_dir
         log_info "Repositorios restaurados"
+        yum clean all &>/dev/null
       fi
     fi
     ;;
@@ -535,32 +755,67 @@ manage_repos() {
 install_from_repo() {
   log_step "Instalando Zabbix Agent desde repositorio oficial..."
 
-  # Determinar la URL del repo según la versión de RHEL
   local REPO_URL=""
+  local ZABBIX_VERSION=""
 
-  # Para RHEL/CentOS 6, usar Zabbix 7.0 (última versión que soporta EL6)
-  if [ "$OS_MAJOR_VER" -eq 6 ]; then
-    REPO_URL="https://repo.zabbix.com/zabbix/7.0/rhel/${OS_MAJOR_VER}/x86_64/zabbix-release-latest-7.0.el${OS_MAJOR_VER}.noarch.rpm"
+  # === CONFIGURACIÓN DE REPOSITORIOS SEGÚN DISTRIBUCIÓN ===
+
+  # Para RHEL/CentOS 6 (EOL)
+  if [ "$OS_MAJOR_VER" -eq 6 ] && [ "$DISTRO_TYPE" = "centos_eol" ]; then
+    log_info "CentOS 6 EOL detectado - Configurando repositorios Vault..."
+    configure_centos6_repos
+    ZABBIX_VERSION="7.0"
+    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/rhel/${OS_MAJOR_VER}/x86_64/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
+
+  # Para CentOS 7 (EOL)
+  elif [ "$OS_MAJOR_VER" -eq 7 ] && [ "$DISTRO_TYPE" = "centos_eol" ]; then
+    log_info "CentOS 7 EOL detectado - Configurando repositorios Vault..."
+    configure_centos7_repos
+    ZABBIX_VERSION="7.0"
+    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/rhel/${OS_MAJOR_VER}/x86_64/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
+
+  # Para CentOS 8 (EOL)
+  elif [ "$OS_MAJOR_VER" -eq 8 ] && [ "$DISTRO_TYPE" = "centos_eol" ]; then
+    log_info "CentOS 8 EOL detectado - Configurando repositorios Vault..."
+    configure_centos8_repos
+    ZABBIX_VERSION="7.4"
+    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/centos/${OS_MAJOR_VER}/x86_64/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
+
+  # Para AlmaLinux 8 / Rocky 8 / RHEL 8 (activos)
+  elif [ "$OS_MAJOR_VER" -eq 8 ] && [ "$DISTRO_TYPE" = "active" ]; then
+    log_info "Distribución activa EL8 detectada - Usando repositorios oficiales"
+    ZABBIX_VERSION="7.4"
+    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/${OS_MAJOR_VER}/x86_64/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
+
+  # Para EL9
+  elif [ "$OS_MAJOR_VER" -eq 9 ]; then
+    log_info "EL9 detectado - Usando repositorios oficiales"
+    ZABBIX_VERSION="7.4"
+    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/${OS_MAJOR_VER}/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
+
+  # Para EL10
+  elif [ "$OS_MAJOR_VER" -eq 10 ]; then
+    log_info "EL10 detectado - Usando repositorios oficiales"
+    ZABBIX_VERSION="7.4"
+    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/${OS_MAJOR_VER}/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
+
   else
-    # Para EL7/8/9/10, usar Zabbix 7.4
-    local ZABBIX_VERSION="7.4"
-    case $OS_MAJOR_VER in
-    10) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm" ;;
-    9) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/9/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el9.noarch.rpm" ;;
-    8) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/8/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el8.noarch.rpm" ;;
-    7) REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/rhel/7/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el7.noarch.rpm" ;;
-    *) return 1 ;;
-    esac
+    log_error "Versión de RHEL no soportada: $OS_MAJOR_VER"
+    return 1
   fi
 
   log_info "Usando repositorio: $REPO_URL"
+  log_info "Versión Zabbix: $ZABBIX_VERSION"
+  ZABBIX_VERSION_INSTALLED="$ZABBIX_VERSION"
 
-  # Backup de repositorios existentes
-  manage_repos "backup"
+  # Backup de repositorios existentes (si no se hizo ya)
+  if [ ! -f /tmp/zabbix_repo_backup_dir ]; then
+    manage_repos "backup"
+  fi
 
   # Instalar repositorio de Zabbix
   log_step "Instalando repositorio Zabbix..."
-  if ! rpm -Uvh $REPO_URL &>/dev/null; then
+  if ! rpm -Uvh $REPO_URL 2>/dev/null; then
     log_error "Fallo al instalar repositorio Zabbix"
     manage_repos "restore"
     return 1
@@ -569,22 +824,14 @@ install_from_repo() {
   # Limpiar caché de yum
   yum clean all &>/dev/null
 
-  # Para CentOS 6, necesitamos instalar epel-release y algunas dependencias
-  if [ "$OS_MAJOR_VER" -eq 6 ]; then
-    log_step "Configurando dependencias para CentOS 6..."
-    # Instalar EPEL si no está
-    if ! rpm -q epel-release &>/dev/null; then
-      rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm 2>/dev/null || true
-    fi
-    yum clean all &>/dev/null
-  fi
+  # Verificar repositorios
+  check_repositories
 
   # Intentar instalar zabbix-agent2 primero
   log_step "Intentando instalar zabbix-agent2..."
-  if yum install -y zabbix-agent2 &>/dev/null; then
+  if yum install -y zabbix-agent2 2>/dev/null; then
     log_info "✅ zabbix-agent2 instalado correctamente desde repositorio"
     AGENT_INSTALLED="agent2"
-    # Configurar el archivo de configuración básico
     configure_agent_config "$AGENT_INSTALLED"
     manage_repos "restore"
     return 0
@@ -592,17 +839,24 @@ install_from_repo() {
 
   # Si falla agent2, intentar con zabbix-agent
   log_warn "Fallo instalación de zabbix-agent2, intentando con zabbix-agent..."
-  if yum install -y zabbix-agent &>/dev/null; then
+  if yum install -y zabbix-agent 2>/dev/null; then
     log_info "✅ zabbix-agent instalado correctamente desde repositorio"
     AGENT_INSTALLED="agent"
-    # Configurar el archivo de configuración básico
     configure_agent_config "$AGENT_INSTALLED"
     manage_repos "restore"
     return 0
   fi
 
-  # Si ambos fallan, restaurar repos y retornar error
-  log_warn "Fallo instalación desde repositorio para ambos agentes"
+  # Si ambos fallan, mostrar diagnóstico
+  log_error "❌ Falló la instalación de ambos agentes"
+  log_warn "Posibles causas:"
+  log_warn "  - Repositorios no disponibles"
+  log_warn "  - Dependencias faltantes"
+  log_warn "  - Problemas de red"
+
+  log_step "Diagnóstico de repositorios:"
+  yum repolist 2>&1 | head -20
+
   manage_repos "restore"
   return 1
 }
@@ -615,7 +869,6 @@ configure_agent_config() {
     log_step "Configurando Zabbix Agent 2..."
     sed -i "s/^Server=.*/Server=$RESOLVED_IP/" $ZABBIX_AGENT2_CONFIG
     sed -i "s/^ServerActive=.*/ServerActive=$RESOLVED_IP/" $ZABBIX_AGENT2_CONFIG
-    # Asegurar que Hostname esté configurado
     if ! grep -q "^Hostname=" $ZABBIX_AGENT2_CONFIG; then
       echo "Hostname=$(hostname -f 2>/dev/null || hostname)" >>$ZABBIX_AGENT2_CONFIG
     fi
@@ -698,18 +951,18 @@ main() {
   LOCAL_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v "127.0.0.1" | head -1)
   LOCAL_HOSTNAME=$(hostname -f 2>/dev/null || hostname)
 
-  # --- Verificar API de Zabbix ---
+  # --- Verificar API de Zabbix (opcional, no bloqueante) ---
   log_step "Verificando conexión con API de Zabbix..."
   API_TEST=$(curl -s -k -X POST \
     -H "Content-Type: application/json-rpc" \
     -d '{"jsonrpc":"2.0","method":"apiinfo.version","params":[],"id":1}' \
-    ${ZABBIX_API_URL})
+    ${ZABBIX_API_URL} 2>/dev/null)
 
   if echo "$API_TEST" | grep -q '"result"'; then
     ZABBIX_VERSION_API=$(echo "$API_TEST" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
     log_info "API de Zabbix accesible (versión: $ZABBIX_VERSION_API)"
 
-    TOKEN_TEST=$(zabbix_api_call "user.get" "{\"output\": [\"userid\"], \"limit\": 1}")
+    TOKEN_TEST=$(zabbix_api_call "user.get" "{\"output\": [\"userid\"], \"limit\": 1}" 2>/dev/null)
     if echo "$TOKEN_TEST" | grep -q '"result"'; then
       log_info "Token de API válido"
 
@@ -736,7 +989,7 @@ main() {
       log_warn "El agente se instalará pero NO se registrará automáticamente"
     fi
   else
-    log_error "No se pudo conectar a la API de Zabbix"
+    log_warn "No se pudo conectar a la API de Zabbix (HTTP 404 o similar)"
     log_warn "El agente se instalará pero NO se registrará automáticamente"
   fi
 
@@ -745,10 +998,12 @@ main() {
 
   if ! install_from_repo; then
     log_error "❌ Falló la instalación del agente desde repositorio"
+    log_warn "Revisa el archivo de log para más detalles: $LOG_FILE"
     exit 1
   fi
 
   log_info "Agente instalado: $AGENT_INSTALLED"
+  log_info "Versión Zabbix: $ZABBIX_VERSION_INSTALLED"
 
   # Iniciar el agente instalado
   if [ "$AGENT_INSTALLED" = "agent2" ]; then
@@ -779,9 +1034,9 @@ main() {
     log_info "✅ Zabbix Agent está funcionando correctamente."
     log_info "   Servidor configurado: $RESOLVED_IP"
     if service_is_active "zabbix-agent2"; then
-      log_info "   Versión: Agent2"
+      log_info "   Versión: Agent2 ($ZABBIX_VERSION_INSTALLED)"
     else
-      log_info "   Versión: Agent"
+      log_info "   Versión: Agent ($ZABBIX_VERSION_INSTALLED)"
     fi
   else
     log_error "❌ No se pudo iniciar Zabbix Agent."
