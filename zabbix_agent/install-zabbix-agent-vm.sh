@@ -761,7 +761,7 @@ install_from_repo() {
   # === CONFIGURACIÓN DE REPOSITORIOS SEGÚN DISTRIBUCIÓN ===
 
   # Para RHEL/CentOS 6 (EOL)
-  if [ "$OS_MAJOR_VER" -eq 6 ] && [ "$DISTRO_TYPE" = "centos_eol" ]; then
+  if [ "$OS_MAJOR_VER" -eq 6 ]; then
     log_info "CentOS 6 EOL detectado - Configurando repositorios Vault..."
     configure_centos6_repos
     ZABBIX_VERSION="7.0"

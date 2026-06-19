@@ -15,6 +15,7 @@ zabbix_export:
           key: openvpn.certs.check
           delay: 1d
           value_type: TEXT
+          timeout: 120s
       discovery_rules:
         - uuid: 4726cb2b5d334ff5b18060bcd85a77cf
           name: 'OpenVPN Certificates Discovery'
@@ -24,7 +25,7 @@ zabbix_export:
             - uuid: 5c2003a7d57d4c37a5661f46ff975e78
               name: 'Certificate {#CERTNAME} days remaining'
               key: 'openvpn.cert.days[{#CERTNAME}]'
-              delay: 1h
+              delay: 1d
               history: 90d
               units: days
               description: |
