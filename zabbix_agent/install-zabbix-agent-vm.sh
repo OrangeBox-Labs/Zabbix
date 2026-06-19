@@ -779,13 +779,13 @@ install_from_repo() {
     log_info "CentOS 8 EOL detectado - Configurando repositorios Vault..."
     configure_centos8_repos
     ZABBIX_VERSION="7.4"
-    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/centos/${OS_MAJOR_VER}/x86_64/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
+    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/centos/${OS_MAJOR_VER}/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
 
   # Para AlmaLinux 8 / Rocky 8 / RHEL 8 (activos)
   elif [ "$OS_MAJOR_VER" -eq 8 ] && [ "$DISTRO_TYPE" = "active" ]; then
     log_info "Distribución activa EL8 detectada - Usando repositorios oficiales"
     ZABBIX_VERSION="7.4"
-    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/${OS_MAJOR_VER}/x86_64/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
+    REPO_URL="https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/${OS_MAJOR_VER}/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el${OS_MAJOR_VER}.noarch.rpm"
 
   # Para EL9
   elif [ "$OS_MAJOR_VER" -eq 9 ]; then
