@@ -624,14 +624,14 @@ configure_repository() {
 
 install_server() {
   log_step "Instalando Zabbix Server, frontend y agente..."
-  dnf install -y zabbix-server-mysql zabbix-sender zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent zabbix-get openssl acl >>"$LOG_FILE" 2>&1
+  dnf install -y zabbix-server-mysql zabbix-sender zabbix-web-mysql zabbix-apache-conf zabbix-sql-scripts zabbix-selinux-policy zabbix-agent2 zabbix-get openssl acl >>"$LOG_FILE" 2>&1
   log_info "Paquetes de Zabbix instalados"
 }
 
 install_agent_only() {
   log_step "Instalando solo Zabbix Agent..."
-  dnf install -y zabbix-agent >>"$LOG_FILE" 2>&1
-  log_info "Zabbix Agent instalado"
+  dnf install -y zabbix-agent2 >>"$LOG_FILE" 2>&1
+  log_info "Zabbix Agent2 instalado"
 }
 
 create_database() {
@@ -787,9 +787,9 @@ configure_agent() {
   log_step "Configurando Zabbix Agent..."
 
   local server_ip=$(hostname -I | awk '{print $1}')
-  sed -i "s/^Server=127.0.0.1/Server=127.0.0.1,${server_ip}/" /etc/zabbix/zabbix_agentd.conf
-  sed -i "s/^ServerActive=127.0.0.1/ServerActive=127.0.0.1,${server_ip}/" /etc/zabbix/zabbix_agentd.conf
-  sed -i "s/^Hostname=Zabbix server/Hostname=$(hostname)/" /etc/zabbix/zabbix_agentd.conf
+  sed -i "s/^Server=127.0.0.1/Server=127.0.0.1,${server_ip}/" /etc/zabbix/zabbix_agent2.conf
+  sed -i "s/^ServerActive=127.0.0.1/ServerActive=127.0.0.1,${server_ip}/" /etc/zabbix/zabbix_agent2.conf
+  sed -i "s/^Hostname=Zabbix server/Hostname=$(hostname)/" /etc/zabbix/zabbix_agent2.conf
 
   log_info "Zabbix Agent configurado"
 }
