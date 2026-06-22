@@ -94,7 +94,7 @@ zabbix_export:
                   parameters:
                     - '-1'
                     - Unknown
-              timeout: 15s
+              timeout: 60s
               trigger_prototypes:
                 - uuid: 72d8013b2eea4d179543aaa23bed0041
                   expression: 'last(/Zimbra Mail Server by OrangeBox/zimbra.service.status[{#ZIMBRA_SERVICE}],#2)="Unknown" and last(/Zimbra Mail Server by OrangeBox/zimbra.service.status[{#ZIMBRA_SERVICE}],#3)="Unknown"'
@@ -126,41 +126,65 @@ zabbix_export:
                   width: '72'
                   height: '6'
                   fields:
-                    - type: INTEGER
-                      name: ds.0.aggregate_function
-                      value: '7'
-                    - type: INTEGER
-                      name: ds.0.color_palette
-                      value: '0'
+                    - type: STRING
+                      name: ds.0.color
+                      value: 80FF00
                     - type: INTEGER
                       name: ds.0.fill
-                      value: '7'
+                      value: '5'
                     - type: STRING
                       name: ds.0.items.0
                       value: 'Zimbra Cola de correos'
-                    - type: STRING
-                      name: ds.0.items.1
-                      value: 'Zimbra Correos enviados'
-                    - type: STRING
-                      name: ds.0.items.2
-                      value: 'Zimbra Correos recibidos'
-                    - type: STRING
-                      name: ds.0.items.3
-                      value: 'Zimbra Spam detectado'
-                    - type: STRING
-                      name: ds.0.items.4
-                      value: 'Zimbra Virus detectados'
-                    - type: INTEGER
-                      name: ds.0.missingdatafunc
-                      value: '3'
-                    - type: INTEGER
-                      name: ds.0.stacked
-                      value: '1'
-                    - type: INTEGER
-                      name: ds.0.transparency
-                      value: '4'
                     - type: INTEGER
                       name: ds.0.width
+                      value: '3'
+                    - type: STRING
+                      name: ds.1.color
+                      value: FFD54F
+                    - type: INTEGER
+                      name: ds.1.fill
+                      value: '5'
+                    - type: STRING
+                      name: ds.1.items.0
+                      value: 'Zimbra Correos enviados'
+                    - type: INTEGER
+                      name: ds.1.width
+                      value: '3'
+                    - type: STRING
+                      name: ds.2.color
+                      value: 0EC9AC
+                    - type: INTEGER
+                      name: ds.2.fill
+                      value: '5'
+                    - type: STRING
+                      name: ds.2.items.0
+                      value: 'Zimbra Correos recibidos'
+                    - type: INTEGER
+                      name: ds.2.width
+                      value: '3'
+                    - type: STRING
+                      name: ds.3.color
+                      value: 524BBC
+                    - type: INTEGER
+                      name: ds.3.fill
+                      value: '5'
+                    - type: STRING
+                      name: ds.3.items.0
+                      value: 'Zimbra Spam detectado'
+                    - type: INTEGER
+                      name: ds.3.width
+                      value: '3'
+                    - type: STRING
+                      name: ds.4.color
+                      value: ED1248
+                    - type: INTEGER
+                      name: ds.4.fill
+                      value: '5'
+                    - type: STRING
+                      name: ds.4.items.0
+                      value: 'Zimbra Virus detectados'
+                    - type: INTEGER
+                      name: ds.4.width
                       value: '3'
                     - type: STRING
                       name: lefty_static_units
