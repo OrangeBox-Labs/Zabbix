@@ -753,6 +753,41 @@ manage_repos() {
 
 # --- Función para instalar desde repositorio ---
 install_from_repo() {
+
+  # === LIMPIAR REPOSITORIO ZABBIX EXISTENTE ===
+  log_step "Verificando repositorios Zabbix existentes..."
+
+  # Buscar y eliminar cualquier paquete de repositorio Zabbix instalado
+  ZABBIX_REPO_PACKAGES=$(rpm -qa | grep -i "zabbix-release" 2>/dev/null)
+
+  if [ -n "$ZABBIX_REPO_PACKAGES" ]; then
+    log_warn "Repositorios Zabbix existentes detectados: $ZABBIX_REPO_PACKAGES"
+    log_step "Eliminando repositorios Zabbix antiguos..."
+
+    for pkg in $ZABBIX_REPO_PACKAGES; do
+      log_info "Eliminando: $pkg"
+      rpm -e --nodeps "$pkg" 2>/dev/null
+      if [ $? -eq 0 ]; then
+        log_info "✅ $pkg eliminado correctamente"
+      else
+        log_warn "⚠️ No se pudo eliminar $pkg, intentando con yum..."
+        yum remove -y "$pkg" 2>/dev/null
+      fi
+    done
+
+    # Limpiar archivos residuales del repositorio
+    rm -f /etc/yum.repos.d/zabbix*.repo 2>/dev/null
+    rm -f /etc/pki/rpm-gpg/RPM-GPG-KEY-ZABBIX* 2>/dev/null
+
+    # Limpiar caché de yum
+    yum clean all 2>/dev/null
+    log_info "✅ Repositorios Zabbix antiguos eliminados"
+  else
+    log_info "No se encontraron repositorios Zabbix existentes"
+  fi
+
+  # === CONTINUAR CON LA INSTALACIÓN ===
+
   log_step "Instalando Zabbix Agent desde repositorio oficial..."
 
   local REPO_URL=""

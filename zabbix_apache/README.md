@@ -77,7 +77,6 @@ mod_status funcionando correctamente
 
 Configuración completada
 
-Autor: Felipe Román <froman@orangebox.cl>
 ```
 
 ---
