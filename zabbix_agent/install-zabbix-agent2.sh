@@ -188,11 +188,12 @@ detect_os() {
 # ==============================================
 
 REPO_BACKUP_DIR=""
+REPOS_BACKED_UP=false
 
 disable_all_repos() {
   log_step "Deshabilitando TODOS los repositorios existentes..."
 
-  REPO_BACKUP_DIR="/etc/yum.repos.d.backup.$$"
+  REPO_BACKUP_DIR="/etc/yum.repos.d.backup.$"
   mkdir -p "$REPO_BACKUP_DIR"
 
   for repo in /etc/yum.repos.d/*.repo; do
@@ -202,17 +203,26 @@ disable_all_repos() {
     fi
   done
 
+  REPOS_BACKED_UP=true
   log_info "Todos los repositorios han sido deshabilitados"
 }
 
 restore_all_repos() {
+  [ "$REPOS_BACKED_UP" = true ] || return 0
+
   log_step "Restaurando repositorios originales..."
 
+  # Eliminar cualquier .repo creado durante la intervención
+  # (incluyendo zabbix.repo y repositorios temporales como CentOS-Vault.repo)
+  find /etc/yum.repos.d -maxdepth 1 -type f -name '*.repo' -delete
+
+  # Restaurar exactamente los .repo que existían antes de la intervención
   if [ -d "$REPO_BACKUP_DIR" ]; then
-    cp -f "$REPO_BACKUP_DIR"/*.repo /etc/yum.repos.d/ 2>/dev/null
-    log_info "Repositorios originales restaurados"
+    cp -f "$REPO_BACKUP_DIR"/*.repo /etc/yum.repos.d/ 2>/dev/null || true
     rm -rf "$REPO_BACKUP_DIR"
   fi
+
+  REPOS_BACKED_UP=false
 
   if command -v dnf &>/dev/null; then
     dnf clean all >/dev/null 2>&1
@@ -221,14 +231,24 @@ restore_all_repos() {
   fi
 }
 
+cleanup_repos_on_exit() {
+  local exit_code=$?
+  if [ "$REPOS_BACKED_UP" = true ]; then
+    echo -e "${YELLOW}[!] Restaurando repositorios antes de salir...${NC}"
+    restore_all_repos
+  fi
+  trap - EXIT
+  exit "$exit_code"
+}
+
 setup_centos6_repos() {
   log_step "Configurando repositorios para CentOS 6 (usando Zabbix 7.0)..."
 
   # Instalar EPEL para CentOS 6
-  rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm 2>/dev/null || true
+  rpm -Uvh --replacepkgs https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm 2>/dev/null || true
 
   # Instalar repositorio Zabbix 7.0 (última versión que soporta EL6)
-  rpm -Uvh https://repo.zabbix.com/zabbix/7.0/rhel/6/x86_64/zabbix-release-latest-7.0.el6.noarch.rpm --nodeps 2>/dev/null
+  rpm -Uvh --replacepkgs https://repo.zabbix.com/zabbix/7.0/rhel/6/x86_64/zabbix-release-latest-7.0.el6.noarch.rpm --nodeps 2>/dev/null
 
   yum clean all >/dev/null 2>&1
   log_info "Repositorios CentOS 6 configurados"
@@ -251,7 +271,7 @@ gpgcheck=0
 enabled=1
 EOF
 
-  rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/rhel/7/noarch/zabbix-release-latest-7.4.el7.noarch.rpm --nodeps 2>/dev/null
+  rpm -Uvh --replacepkgs https://repo.zabbix.com/zabbix/7.4/release/rhel/7/noarch/zabbix-release-latest-7.4.el7.noarch.rpm --nodeps 2>/dev/null
 
   yum clean all >/dev/null 2>&1
   log_info "Repositorios CentOS 7 configurados"
@@ -274,7 +294,7 @@ gpgcheck=0
 enabled=1
 EOF
 
-  rpm -Uvh https://repo.zabbix.com/zabbix/7.4/release/rhel/8/noarch/zabbix-release-latest-7.4.el8.noarch.rpm --nodeps 2>/dev/null
+  rpm -Uvh --replacepkgs https://repo.zabbix.com/zabbix/7.4/release/rhel/8/noarch/zabbix-release-latest-7.4.el8.noarch.rpm --nodeps 2>/dev/null
 
   dnf clean all >/dev/null 2>&1
   log_info "Repositorios CentOS 8 configurados"
@@ -286,16 +306,16 @@ setup_rhel_repos() {
 
   if [ "$version" -eq 6 ]; then
     # Para RHEL 6, usar Zabbix 7.0
-    rpm -Uvh https://repo.zabbix.com/zabbix/7.0/rhel/6/x86_64/zabbix-release-latest-7.0.el6.noarch.rpm --nodeps 2>/dev/null
-    rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm 2>/dev/null || true
+    rpm -Uvh --replacepkgs https://repo.zabbix.com/zabbix/7.0/rhel/6/x86_64/zabbix-release-latest-7.0.el6.noarch.rpm --nodeps 2>/dev/null
+    rpm -Uvh --replacepkgs https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm 2>/dev/null || true
   else
     # Para EL7/8/9/10, usar Zabbix 7.4
     local ZABBIX_VERSION="7.4"
     case $version in
     10) rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/10/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el10.noarch.rpm --nodeps 2>/dev/null ;;
-    9) rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/9/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el9.noarch.rpm --nodeps 2>/dev/null ;;
-    8) rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/8/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el8.noarch.rpm --nodeps 2>/dev/null ;;
-    7) rpm -Uvh https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/rhel/7/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el7.noarch.rpm --nodeps 2>/dev/null ;;
+    9) rpm -Uvh --replacepkgs https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/9/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el9.noarch.rpm --nodeps 2>/dev/null ;;
+    8) rpm -Uvh --replacepkgs https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/alma/8/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el8.noarch.rpm --nodeps 2>/dev/null ;;
+    7) rpm -Uvh --replacepkgs https://repo.zabbix.com/zabbix/${ZABBIX_VERSION}/release/rhel/7/noarch/zabbix-release-latest-${ZABBIX_VERSION}.el7.noarch.rpm --nodeps 2>/dev/null ;;
     *) log_warn "Versión no soportada: $version" ;;
     esac
   fi
@@ -893,6 +913,7 @@ detect_os
 
 # Deshabilitar TODOS los repositorios existentes
 disable_all_repos
+trap cleanup_repos_on_exit EXIT
 
 # Instalar dependencias y agente
 install_dependencies
