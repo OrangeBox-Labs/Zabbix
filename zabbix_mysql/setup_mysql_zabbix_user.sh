@@ -470,6 +470,7 @@ main() {
           echo -e "${GREEN}Password: ${YELLOW}$NEW_PASS${NC}"
           echo -e "${GREEN}Permisos: PROCESS, REPLICATION CLIENT, SELECT${NC}"
           echo -e "${GREEN}Hosts permitidos: localhost, 127.0.0.1${NC}"
+          echo -e "${GREEN}MYSQL.DSN: tcp://localhost:3306${NC}"
           echo -e "\n${YELLOW}Para probar la conexión ejecute:${NC}"
           echo -e "mysql -h 127.0.0.1 -u zbx_monitor -p'$NEW_PASS' -e \"SHOW DATABASES;\""
         fi
